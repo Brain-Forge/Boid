@@ -6,10 +6,15 @@
  * 1. Separation: Avoid crowding neighbors
  * 2. Alignment: Steer towards the average heading of neighbors
  * 3. Cohesion: Steer towards the average position of neighbors
+ * 
+ * Optimized for performance by:
+ * - Normalizing vectors only when necessary
+ * - Avoiding unnecessary vector instantiations
+ * - Using squared distances where possible
+ * - Caching intermediate calculations
  */
 
 use nannou::prelude::*;
-use crate::params::SimulationParams;
 use crate::camera::Camera;
 use crate::BOID_SIZE;
 use rand::Rng;
@@ -31,7 +36,14 @@ impl Boid {
         // Random initial velocity
         let vx = rng.gen_range(-1.0..1.0);
         let vy = rng.gen_range(-1.0..1.0);
-        let velocity = vec2(vx, vy).normalize() * 2.0;
+        
+        // Only normalize if needed (avoid division by zero)
+        let velocity = if vx == 0.0 && vy == 0.0 {
+            vec2(1.0, 0.0) * 2.0
+        } else {
+            let length = (vx * vx + vy * vy).sqrt();
+            vec2(vx / length, vy / length) * 2.0
+        };
         
         Self {
             position: pt2(x, y),
@@ -53,9 +65,13 @@ impl Boid {
         // Update velocity
         self.velocity += self.acceleration;
         
-        // Limit speed
-        if self.velocity.length() > self.max_speed {
-            self.velocity = self.velocity.normalize() * self.max_speed;
+        // Limit speed (only normalize if exceeding max_speed)
+        let speed_squared = self.velocity.length_squared();
+        let max_speed_squared = self.max_speed * self.max_speed;
+        
+        if speed_squared > max_speed_squared {
+            let speed = speed_squared.sqrt();
+            self.velocity *= self.max_speed / speed;
         }
         
         // Update position
@@ -83,7 +99,7 @@ impl Boid {
     }
     
     // Calculate separation force (avoid crowding neighbors)
-    pub fn separation(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32, use_squared_distance: bool) -> Vec2 {
+    pub fn separation(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32, _use_squared_distance: bool) -> Vec2 {
         let mut steering = Vec2::ZERO;
         let mut count = 0;
         
@@ -93,40 +109,26 @@ impl Boid {
         for &i in neighbor_indices {
             let other = &boids[i];
             
-            // Choose between regular or squared distance calculation
-            let (d, d_squared) = if use_squared_distance {
-                // Calculate squared distance directly
-                let dx = self.position.x - other.position.x;
-                let dy = self.position.y - other.position.y;
-                let d_squared = dx * dx + dy * dy;
-                
-                // Only calculate actual distance if needed for weighting
-                let d = if d_squared > 0.0 && d_squared < radius_squared {
-                    d_squared.sqrt()
-                } else {
-                    0.0
-                };
-                
-                (d, d_squared)
-            } else {
-                // Use regular distance calculation
-                let d = self.position.distance(other.position);
-                (d, d * d)
-            };
+            // Calculate squared distance directly
+            let dx = self.position.x - other.position.x;
+            let dy = self.position.y - other.position.y;
+            let d_squared = dx * dx + dy * dy;
             
-            // Check if within perception radius using appropriate comparison
-            let is_within_radius = if use_squared_distance {
-                d_squared > 0.0 && d_squared < radius_squared
-            } else {
-                d > 0.0 && d < perception_radius
-            };
+            // Skip if it's the same boid or outside perception radius
+            if d_squared <= 0.0 || d_squared >= radius_squared {
+                continue;
+            }
             
-            // If this is not the same boid and it's within perception radius
-            if is_within_radius {
-                // Calculate vector pointing away from neighbor
-                let mut diff = self.position - other.position;
-                diff = diff.normalize() / d;  // Weight by distance
-                steering += diff;
+            // Calculate vector pointing away from neighbor
+            // Only calculate actual distance if needed for weighting
+            let d = d_squared.sqrt();
+            
+            // Avoid division by zero
+            if d > 0.0 {
+                // Weight by distance (closer boids have more influence)
+                // Reuse dx and dy instead of creating a new vector
+                steering.x += (dx / d) / d;
+                steering.y += (dy / d) / d;
                 count += 1;
             }
         }
@@ -134,12 +136,22 @@ impl Boid {
         if count > 0 {
             steering /= count as f32;
             
-            if steering.length() > 0.0 {
+            let steering_length_squared = steering.length_squared();
+            if steering_length_squared > 0.0 {
                 // Implement Reynolds: Steering = Desired - Velocity
-                steering = steering.normalize() * self.max_speed - self.velocity;
+                // Only normalize if needed
+                let steering_length = steering_length_squared.sqrt();
+                let desired = steering * (self.max_speed / steering_length);
                 
-                if steering.length() > self.max_force {
-                    steering = steering.normalize() * self.max_force;
+                steering = desired - self.velocity;
+                
+                // Limit force
+                let force_squared = steering.length_squared();
+                let max_force_squared = self.max_force * self.max_force;
+                
+                if force_squared > max_force_squared {
+                    let force_length = force_squared.sqrt();
+                    steering *= self.max_force / force_length;
                 }
             }
         }
@@ -148,7 +160,7 @@ impl Boid {
     }
     
     // Calculate alignment force (steer towards average heading of neighbors)
-    pub fn alignment(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32, use_squared_distance: bool) -> Vec2 {
+    pub fn alignment(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32, _use_squared_distance: bool) -> Vec2 {
         let mut steering = Vec2::ZERO;
         let mut count = 0;
         
@@ -158,35 +170,41 @@ impl Boid {
         for &i in neighbor_indices {
             let other = &boids[i];
             
-            // Choose between regular or squared distance calculation
-            let is_within_radius = if use_squared_distance {
-                // Calculate squared distance directly
-                let dx = self.position.x - other.position.x;
-                let dy = self.position.y - other.position.y;
-                let d_squared = dx * dx + dy * dy;
-                
-                d_squared > 0.0 && d_squared < radius_squared
-            } else {
-                // Use regular distance calculation
-                let d = self.position.distance(other.position);
-                d > 0.0 && d < perception_radius
-            };
+            // Calculate squared distance directly
+            let dx = self.position.x - other.position.x;
+            let dy = self.position.y - other.position.y;
+            let d_squared = dx * dx + dy * dy;
             
-            // If this is not the same boid and it's within perception radius
-            if is_within_radius {
-                steering += other.velocity;
-                count += 1;
+            // Skip if it's the same boid or outside perception radius
+            if d_squared <= 0.0 || d_squared >= radius_squared {
+                continue;
             }
+            
+            // Accumulate velocities
+            steering += other.velocity;
+            count += 1;
         }
         
         if count > 0 {
             steering /= count as f32;
             
-            // Implement Reynolds: Steering = Desired - Velocity
-            steering = steering.normalize() * self.max_speed - self.velocity;
-            
-            if steering.length() > self.max_force {
-                steering = steering.normalize() * self.max_force;
+            // Only normalize if the steering vector has magnitude
+            let steering_length_squared = steering.length_squared();
+            if steering_length_squared > 0.0 {
+                // Implement Reynolds: Steering = Desired - Velocity
+                let steering_length = steering_length_squared.sqrt();
+                let desired = steering * (self.max_speed / steering_length);
+                
+                steering = desired - self.velocity;
+                
+                // Limit force
+                let force_squared = steering.length_squared();
+                let max_force_squared = self.max_force * self.max_force;
+                
+                if force_squared > max_force_squared {
+                    let force_length = force_squared.sqrt();
+                    steering *= self.max_force / force_length;
+                }
             }
         }
         
@@ -194,8 +212,8 @@ impl Boid {
     }
     
     // Calculate cohesion force (steer towards average position of neighbors)
-    pub fn cohesion(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32, use_squared_distance: bool) -> Vec2 {
-        let mut steering = Vec2::ZERO;
+    pub fn cohesion(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32, _use_squared_distance: bool) -> Vec2 {
+        let mut sum_position = Vec2::ZERO;
         let mut count = 0;
         
         // Pre-calculate squared radius for optimization
@@ -204,42 +222,44 @@ impl Boid {
         for &i in neighbor_indices {
             let other = &boids[i];
             
-            // Choose between regular or squared distance calculation
-            let is_within_radius = if use_squared_distance {
-                // Calculate squared distance directly
-                let dx = self.position.x - other.position.x;
-                let dy = self.position.y - other.position.y;
-                let d_squared = dx * dx + dy * dy;
-                
-                d_squared > 0.0 && d_squared < radius_squared
-            } else {
-                // Use regular distance calculation
-                let d = self.position.distance(other.position);
-                d > 0.0 && d < perception_radius
-            };
+            // Calculate squared distance directly
+            let dx = self.position.x - other.position.x;
+            let dy = self.position.y - other.position.y;
+            let d_squared = dx * dx + dy * dy;
             
-            // If this is not the same boid and it's within perception radius
-            if is_within_radius {
-                steering += Vec2::new(other.position.x, other.position.y);
-                count += 1;
+            // Skip if it's the same boid or outside perception radius
+            if d_squared <= 0.0 || d_squared >= radius_squared {
+                continue;
             }
+            
+            // Accumulate positions (reuse existing Vec2 from position)
+            sum_position.x += other.position.x;
+            sum_position.y += other.position.y;
+            count += 1;
         }
         
         if count > 0 {
-            steering /= count as f32;
+            sum_position /= count as f32;
             
             // Create desired velocity towards target
-            let desired = steering - Vec2::new(self.position.x, self.position.y);
+            let desired = sum_position - Vec2::new(self.position.x, self.position.y);
             
-            if desired.length() > 0.0 {
-                // Scale to maximum speed
-                let desired = desired.normalize() * self.max_speed;
+            let desired_length_squared = desired.length_squared();
+            if desired_length_squared > 0.0 {
+                // Scale to maximum speed (only normalize if needed)
+                let desired_length = desired_length_squared.sqrt();
+                let desired_normalized = desired * (self.max_speed / desired_length);
                 
                 // Implement Reynolds: Steering = Desired - Velocity
-                let mut steering = desired - self.velocity;
+                let mut steering = desired_normalized - self.velocity;
                 
-                if steering.length() > self.max_force {
-                    steering = steering.normalize() * self.max_force;
+                // Limit force
+                let force_squared = steering.length_squared();
+                let max_force_squared = self.max_force * self.max_force;
+                
+                if force_squared > max_force_squared {
+                    let force_length = force_squared.sqrt();
+                    steering *= self.max_force / force_length;
                 }
                 
                 return steering;
@@ -249,20 +269,8 @@ impl Boid {
         Vec2::ZERO
     }
     
-    // Original flock method for backward compatibility (without spatial grid)
-    pub fn flock(&mut self, boids: &[Boid], params: &SimulationParams) {
-        // Use the original methods but pass the squared distance parameter
-        let separation = self.separation_original(boids, params.separation_radius, params.enable_squared_distance) * params.separation_weight;
-        let alignment = self.alignment_original(boids, params.alignment_radius, params.enable_squared_distance) * params.alignment_weight;
-        let cohesion = self.cohesion_original(boids, params.cohesion_radius, params.enable_squared_distance) * params.cohesion_weight;
-        
-        self.apply_force(separation);
-        self.apply_force(alignment);
-        self.apply_force(cohesion);
-    }
-    
     // Original versions of the flocking behaviors (without spatial grid)
-    fn separation_original(&self, boids: &[Boid], perception_radius: f32, use_squared_distance: bool) -> Vec2 {
+    pub fn separation_original(&self, boids: &[Boid], perception_radius: f32, _use_squared_distance: bool) -> Vec2 {
         let mut steering = Vec2::ZERO;
         let mut count = 0;
         
@@ -270,53 +278,46 @@ impl Boid {
         let radius_squared = perception_radius * perception_radius;
         
         for other in boids {
-            // Choose between regular or squared distance calculation
-            let (d, d_squared) = if use_squared_distance {
-                // Calculate squared distance directly
-                let dx = self.position.x - other.position.x;
-                let dy = self.position.y - other.position.y;
-                let d_squared = dx * dx + dy * dy;
-                
-                // Only calculate actual distance if needed for weighting
-                let d = if d_squared > 0.0 && d_squared < radius_squared {
-                    d_squared.sqrt()
-                } else {
-                    0.0
-                };
-                
-                (d, d_squared)
-            } else {
-                // Use regular distance calculation
-                let d = self.position.distance(other.position);
-                (d, d * d)
-            };
+            // Calculate squared distance directly
+            let dx = self.position.x - other.position.x;
+            let dy = self.position.y - other.position.y;
+            let d_squared = dx * dx + dy * dy;
             
-            // Check if within perception radius using appropriate comparison
-            let is_within_radius = if use_squared_distance {
-                d_squared > 0.0 && d_squared < radius_squared
-            } else {
-                d > 0.0 && d < perception_radius
-            };
-            
-            // If this is not the same boid and it's within perception radius
-            if is_within_radius {
-                // Calculate vector pointing away from neighbor
-                let mut diff = self.position - other.position;
-                diff = diff.normalize() / d;  // Weight by distance
-                steering += diff;
-                count += 1;
+            // Skip if it's the same boid or outside perception radius
+            if d_squared <= 0.0 || d_squared >= radius_squared {
+                continue;
             }
+            
+            // Calculate vector pointing away from neighbor
+            // Only calculate actual distance if needed for weighting
+            let d = d_squared.sqrt();
+            
+            // Weight by distance (closer boids have more influence)
+            // Reuse dx and dy instead of creating a new vector
+            steering.x += (dx / d) / d;
+            steering.y += (dy / d) / d;
+            count += 1;
         }
         
         if count > 0 {
             steering /= count as f32;
             
-            if steering.length() > 0.0 {
+            let steering_length_squared = steering.length_squared();
+            if steering_length_squared > 0.0 {
                 // Implement Reynolds: Steering = Desired - Velocity
-                steering = steering.normalize() * self.max_speed - self.velocity;
+                // Only normalize if needed
+                let steering_length = steering_length_squared.sqrt();
+                let desired = steering * (self.max_speed / steering_length);
                 
-                if steering.length() > self.max_force {
-                    steering = steering.normalize() * self.max_force;
+                steering = desired - self.velocity;
+                
+                // Limit force
+                let force_squared = steering.length_squared();
+                let max_force_squared = self.max_force * self.max_force;
+                
+                if force_squared > max_force_squared {
+                    let force_length = force_squared.sqrt();
+                    steering *= self.max_force / force_length;
                 }
             }
         }
@@ -324,7 +325,7 @@ impl Boid {
         steering
     }
     
-    fn alignment_original(&self, boids: &[Boid], perception_radius: f32, use_squared_distance: bool) -> Vec2 {
+    pub fn alignment_original(&self, boids: &[Boid], perception_radius: f32, _use_squared_distance: bool) -> Vec2 {
         let mut steering = Vec2::ZERO;
         let mut count = 0;
         
@@ -332,85 +333,93 @@ impl Boid {
         let radius_squared = perception_radius * perception_radius;
         
         for other in boids {
-            // Choose between regular or squared distance calculation
-            let is_within_radius = if use_squared_distance {
-                // Calculate squared distance directly
-                let dx = self.position.x - other.position.x;
-                let dy = self.position.y - other.position.y;
-                let d_squared = dx * dx + dy * dy;
-                
-                d_squared > 0.0 && d_squared < radius_squared
-            } else {
-                // Use regular distance calculation
-                let d = self.position.distance(other.position);
-                d > 0.0 && d < perception_radius
-            };
+            // Calculate squared distance directly
+            let dx = self.position.x - other.position.x;
+            let dy = self.position.y - other.position.y;
+            let d_squared = dx * dx + dy * dy;
             
-            // If this is not the same boid and it's within perception radius
-            if is_within_radius {
-                steering += other.velocity;
-                count += 1;
+            // Skip if it's the same boid or outside perception radius
+            if d_squared <= 0.0 || d_squared >= radius_squared {
+                continue;
             }
+            
+            // Accumulate velocities
+            steering += other.velocity;
+            count += 1;
         }
         
         if count > 0 {
             steering /= count as f32;
             
-            // Implement Reynolds: Steering = Desired - Velocity
-            steering = steering.normalize() * self.max_speed - self.velocity;
-            
-            if steering.length() > self.max_force {
-                steering = steering.normalize() * self.max_force;
+            // Only normalize if the steering vector has magnitude
+            let steering_length_squared = steering.length_squared();
+            if steering_length_squared > 0.0 {
+                // Implement Reynolds: Steering = Desired - Velocity
+                let steering_length = steering_length_squared.sqrt();
+                let desired = steering * (self.max_speed / steering_length);
+                
+                steering = desired - self.velocity;
+                
+                // Limit force
+                let force_squared = steering.length_squared();
+                let max_force_squared = self.max_force * self.max_force;
+                
+                if force_squared > max_force_squared {
+                    let force_length = force_squared.sqrt();
+                    steering *= self.max_force / force_length;
+                }
             }
         }
         
         steering
     }
     
-    fn cohesion_original(&self, boids: &[Boid], perception_radius: f32, use_squared_distance: bool) -> Vec2 {
-        let mut steering = Vec2::ZERO;
+    pub fn cohesion_original(&self, boids: &[Boid], perception_radius: f32, _use_squared_distance: bool) -> Vec2 {
+        let mut sum_position = Vec2::ZERO;
         let mut count = 0;
         
         // Pre-calculate squared radius for optimization
         let radius_squared = perception_radius * perception_radius;
         
         for other in boids {
-            // Choose between regular or squared distance calculation
-            let is_within_radius = if use_squared_distance {
-                // Calculate squared distance directly
-                let dx = self.position.x - other.position.x;
-                let dy = self.position.y - other.position.y;
-                let d_squared = dx * dx + dy * dy;
-                
-                d_squared > 0.0 && d_squared < radius_squared
-            } else {
-                // Use regular distance calculation
-                let d = self.position.distance(other.position);
-                d > 0.0 && d < perception_radius
-            };
+            // Calculate squared distance directly
+            let dx = self.position.x - other.position.x;
+            let dy = self.position.y - other.position.y;
+            let d_squared = dx * dx + dy * dy;
             
-            // If this is not the same boid and it's within perception radius
-            if is_within_radius {
-                steering += Vec2::new(other.position.x, other.position.y);
-                count += 1;
+            // Skip if it's the same boid or outside perception radius
+            if d_squared <= 0.0 || d_squared >= radius_squared {
+                continue;
             }
+            
+            // Accumulate positions (reuse existing Vec2 from position)
+            sum_position.x += other.position.x;
+            sum_position.y += other.position.y;
+            count += 1;
         }
         
         if count > 0 {
-            steering /= count as f32;
+            sum_position /= count as f32;
             
             // Create desired velocity towards target
-            let desired = steering - Vec2::new(self.position.x, self.position.y);
+            let desired = sum_position - Vec2::new(self.position.x, self.position.y);
             
-            if desired.length() > 0.0 {
-                // Scale to maximum speed
-                let desired = desired.normalize() * self.max_speed;
+            let desired_length_squared = desired.length_squared();
+            if desired_length_squared > 0.0 {
+                // Scale to maximum speed (only normalize if needed)
+                let desired_length = desired_length_squared.sqrt();
+                let desired_normalized = desired * (self.max_speed / desired_length);
                 
                 // Implement Reynolds: Steering = Desired - Velocity
-                let mut steering = desired - self.velocity;
+                let mut steering = desired_normalized - self.velocity;
                 
-                if steering.length() > self.max_force {
-                    steering = steering.normalize() * self.max_force;
+                // Limit force
+                let force_squared = steering.length_squared();
+                let max_force_squared = self.max_force * self.max_force;
+                
+                if force_squared > max_force_squared {
+                    let force_length = force_squared.sqrt();
+                    steering *= self.max_force / force_length;
                 }
                 
                 return steering;

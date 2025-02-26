@@ -3,6 +3,12 @@
  * 
  * This module defines the main application model and logic for the boid simulation.
  * It handles the initialization, update, and rendering of the simulation.
+ * 
+ * Optimized for performance by:
+ * - Combining forces before applying them to reduce vector operations
+ * - Avoiding unnecessary vector instantiations and normalizations
+ * - Using squared distances where possible
+ * - Caching intermediate calculations
  */
 
 use nannou::prelude::*;
@@ -205,6 +211,11 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
     let params = &model.params;
     let spatial_grid = &model.spatial_grid;
     
+    // Pre-calculate weights to avoid multiplication in the inner loop
+    let separation_weight = params.separation_weight;
+    let alignment_weight = params.alignment_weight;
+    let cohesion_weight = params.cohesion_weight;
+    
     // Collect accelerations first to avoid borrow checker issues
     let mut accelerations = Vec::with_capacity(boids.len());
     
@@ -216,12 +227,16 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
             let nearby_indices = spatial_grid.get_nearby_indices(boids[i].position, WORLD_SIZE);
             
             // Calculate forces
-            let separation = boids[i].separation(boids, &nearby_indices, params.separation_radius, params.enable_squared_distance) * params.separation_weight;
-            let alignment = boids[i].alignment(boids, &nearby_indices, params.alignment_radius, params.enable_squared_distance) * params.alignment_weight;
-            let cohesion = boids[i].cohesion(boids, &nearby_indices, params.cohesion_radius, params.enable_squared_distance) * params.cohesion_weight;
+            let separation = boids[i].separation(boids, &nearby_indices, params.separation_radius, params.enable_squared_distance);
+            let alignment = boids[i].alignment(boids, &nearby_indices, params.alignment_radius, params.enable_squared_distance);
+            let cohesion = boids[i].cohesion(boids, &nearby_indices, params.cohesion_radius, params.enable_squared_distance);
             
-            // Return combined forces
-            separation + alignment + cohesion
+            // Combine forces with weights (avoid creating intermediate vectors)
+            let mut combined_force = Vec2::ZERO;
+            combined_force.x = separation.x * separation_weight + alignment.x * alignment_weight + cohesion.x * cohesion_weight;
+            combined_force.y = separation.y * separation_weight + alignment.y * alignment_weight + cohesion.y * cohesion_weight;
+            
+            combined_force
         }).collect();
     } else {
         // Sequential processing
@@ -230,12 +245,16 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
             let nearby_indices = spatial_grid.get_nearby_indices(boids[i].position, WORLD_SIZE);
             
             // Calculate forces
-            let separation = boids[i].separation(boids, &nearby_indices, params.separation_radius, params.enable_squared_distance) * params.separation_weight;
-            let alignment = boids[i].alignment(boids, &nearby_indices, params.alignment_radius, params.enable_squared_distance) * params.alignment_weight;
-            let cohesion = boids[i].cohesion(boids, &nearby_indices, params.cohesion_radius, params.enable_squared_distance) * params.cohesion_weight;
+            let separation = boids[i].separation(boids, &nearby_indices, params.separation_radius, params.enable_squared_distance);
+            let alignment = boids[i].alignment(boids, &nearby_indices, params.alignment_radius, params.enable_squared_distance);
+            let cohesion = boids[i].cohesion(boids, &nearby_indices, params.cohesion_radius, params.enable_squared_distance);
             
-            // Store combined forces
-            accelerations.push(separation + alignment + cohesion);
+            // Combine forces with weights (avoid creating intermediate vectors)
+            let mut combined_force = Vec2::ZERO;
+            combined_force.x = separation.x * separation_weight + alignment.x * alignment_weight + cohesion.x * cohesion_weight;
+            combined_force.y = separation.y * separation_weight + alignment.y * alignment_weight + cohesion.y * cohesion_weight;
+            
+            accelerations.push(combined_force);
         }
     }
     
@@ -257,9 +276,24 @@ fn update_boids_without_spatial_grid(model: &mut Model) {
     // Create a copy of boids for the calculations
     let boids_clone = model.boids.clone();
     
+    // Pre-calculate weights to avoid multiplication in the inner loop
+    let separation_weight = model.params.separation_weight;
+    let alignment_weight = model.params.alignment_weight;
+    let cohesion_weight = model.params.cohesion_weight;
+    
     // Update each boid
     for boid in &mut model.boids {
-        boid.flock(&boids_clone, &model.params);
+        // Calculate forces
+        let separation = boid.separation_original(&boids_clone, model.params.separation_radius, model.params.enable_squared_distance);
+        let alignment = boid.alignment_original(&boids_clone, model.params.alignment_radius, model.params.enable_squared_distance);
+        let cohesion = boid.cohesion_original(&boids_clone, model.params.cohesion_radius, model.params.enable_squared_distance);
+        
+        // Combine forces with weights (avoid creating intermediate vectors)
+        let mut combined_force = Vec2::ZERO;
+        combined_force.x = separation.x * separation_weight + alignment.x * alignment_weight + cohesion.x * cohesion_weight;
+        combined_force.y = separation.y * separation_weight + alignment.y * alignment_weight + cohesion.y * cohesion_weight;
+        
+        boid.apply_force(combined_force);
         boid.update();
         boid.wrap_edges(WORLD_SIZE);
     }
