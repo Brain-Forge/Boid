@@ -130,22 +130,24 @@ pub fn cull_with_spatial_grid(model: &Model, visible_area: Rect) -> Vec<usize> {
                     }
                     
                     // For cells at the boundary, we need to check if the boid is actually visible
-                    let is_visible = if model.params.enable_interpolation {
-                        let interpolated_pos = model.boids[boid_index].get_interpolated_position(model.interpolation_alpha);
-                        let pos = Vec2::new(interpolated_pos.x, interpolated_pos.y);
-                        visible_area.contains(pos)
-                    } else {
-                        let pos = Vec2::new(model.boids[boid_index].position.x, model.boids[boid_index].position.y);
-                        visible_area.contains(pos)
-                    };
-                    
-                    if is_visible {
-                        visible_indices.push(boid_index);
+                    if boid_index < model.boids.len() {
+                        let is_visible = if model.params.enable_interpolation {
+                            let interpolated_pos = model.boids[boid_index].get_interpolated_position(model.interpolation_alpha);
+                            let pos = Vec2::new(interpolated_pos.x, interpolated_pos.y);
+                            visible_area.contains(pos)
+                        } else {
+                            let pos = Vec2::new(model.boids[boid_index].position.x, model.boids[boid_index].position.y);
+                            visible_area.contains(pos)
+                        };
                         
-                        // Mark as visible
-                        unsafe {
-                            let boid_ptr = &model.boids[boid_index] as *const Boid as *mut Boid;
-                            (*boid_ptr).is_visible = true;
+                        if is_visible {
+                            visible_indices.push(boid_index);
+                            
+                            // Mark as visible
+                            unsafe {
+                                let boid_ptr = &model.boids[boid_index] as *const Boid as *mut Boid;
+                                (*boid_ptr).is_visible = true;
+                            }
                         }
                     }
                 }
