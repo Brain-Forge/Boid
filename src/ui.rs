@@ -57,6 +57,26 @@ pub fn update_ui(
                 ui.label(format!("Camera Position: ({:.0}, {:.0})", 0.0, 0.0)); // Placeholder
             });
             
+            ui.collapsing("Timing Settings", |ui| {
+                ui.add(egui::Slider::new(&mut params.fixed_physics_fps, SimulationParams::get_physics_fps_range())
+                    .text("Physics FPS"));
+                
+                ui.add(egui::Slider::new(&mut params.target_render_fps, SimulationParams::get_render_fps_range())
+                    .text("Target Render FPS (0 = unlimited)"));
+                
+                ui.checkbox(&mut params.enable_interpolation, "Enable Interpolation");
+                
+                ui.separator();
+                
+                // Display actual FPS
+                ui.label(format!("Actual FPS: {:.1}", debug_info.fps));
+                ui.label(format!("Frame time: {:.2} ms", debug_info.frame_time.as_secs_f64() * 1000.0));
+                ui.label(format!("Physics updates per frame: {}", debug_info.physics_updates_per_frame));
+                if params.enable_interpolation {
+                    ui.label(format!("Interpolation alpha: {:.3}", debug_info.interpolation_alpha));
+                }
+            });
+            
             ui.collapsing("Performance Tuning", |ui| {
                 ui.checkbox(&mut params.enable_parallel, "Enable Parallel Processing");
                 ui.checkbox(&mut params.enable_spatial_grid, "Enable Spatial Grid");
@@ -66,8 +86,6 @@ pub fn update_ui(
                 ui.separator();
                 
                 // Performance metrics
-                ui.label(format!("FPS: {:.1}", debug_info.fps));
-                ui.label(format!("Frame time: {:.2} ms", debug_info.frame_time.as_secs_f64() * 1000.0));
                 ui.label(format!("Total Boids: {}", params.num_boids));
                 ui.label(format!("Visible Boids: {}", *debug_info.visible_boids.lock().unwrap()));
                 if params.enable_parallel {
@@ -98,8 +116,8 @@ pub fn draw_debug_info(
     // Create a background panel in the top-left corner
     let margin = 20.0;
     let line_height = 20.0;
-    let panel_width = 200.0;
-    let panel_height = line_height * 7.0 + margin;
+    let panel_width = 250.0;
+    let panel_height = line_height * 9.0 + margin; // Increased for additional lines
     let panel_x = window_rect.left() + panel_width / 2.0;
     let panel_y = window_rect.top() - panel_height / 2.0;
     
@@ -118,6 +136,8 @@ pub fn draw_debug_info(
     let debug_texts = [
         format!("FPS: {:.1}", debug_info.fps),
         format!("Frame time: {:.2} ms", debug_info.frame_time.as_secs_f64() * 1000.0),
+        format!("Physics updates: {}/frame", debug_info.physics_updates_per_frame),
+        format!("Interpolation: {:.3}", debug_info.interpolation_alpha),
         format!("Total Boids: {}", boids_len),
         format!("Visible Boids: {}", *debug_info.visible_boids.lock().unwrap()),
         format!("Zoom: {:.2}x", camera_zoom),
@@ -130,7 +150,7 @@ pub fn draw_debug_info(
         
         // Position the text with a fixed offset from the left edge
         draw.text(text)
-            .x_y(text_x + 70.0, y)
+            .x_y(text_x + 90.0, y) // Increased offset for longer text
             .color(nannou::color::WHITE)
             .font_size(14);
     }

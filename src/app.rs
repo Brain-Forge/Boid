@@ -9,6 +9,7 @@
  * - Avoiding unnecessary vector instantiations and normalizations
  * - Using squared distances where possible
  * - Caching intermediate calculations
+ * - Using fixed timestep for physics with interpolated rendering
  */
 
 use nannou::prelude::*;
@@ -17,6 +18,7 @@ use nannou_egui::Egui;
 use rand::Rng;
 use rayon::prelude::*;
 use std::cell::UnsafeCell;
+use std::time::{Duration, Instant};
 
 use crate::boid::Boid;
 use crate::camera::Camera;
@@ -38,6 +40,12 @@ pub struct Model {
     pub cached_visible_boids: UnsafeCell<Option<Vec<usize>>>,
     pub render_needed: UnsafeCell<bool>,
     pub last_camera_state: Option<(Vec2, f32)>,
+    // Fixed timestep physics variables
+    pub physics_accumulator: Duration,
+    pub physics_step_size: Duration,
+    pub last_update_time: Instant,
+    pub interpolation_alpha: f32,
+    pub last_render_time: Instant,
 }
 
 // Make Model safe to share across threads
@@ -99,6 +107,10 @@ pub fn model(app: &App) -> Model {
         boid.max_speed = params.max_speed;
     }
     
+    // Calculate physics step size based on default FPS
+    let physics_step_size = Duration::from_secs_f32(1.0 / params.fixed_physics_fps);
+    let now = Instant::now();
+    
     Model {
         boids,
         params,
@@ -110,6 +122,12 @@ pub fn model(app: &App) -> Model {
         cached_visible_boids: UnsafeCell::new(None),
         render_needed: UnsafeCell::new(true),
         last_camera_state: None,
+        // Fixed timestep physics variables
+        physics_accumulator: Duration::ZERO,
+        physics_step_size,
+        last_update_time: now,
+        interpolation_alpha: 0.0,
+        last_render_time: now,
     }
 }
 
@@ -125,6 +143,9 @@ pub fn update(app: &App, model: &mut Model, update: Update) {
     // If UI changed, we need to re-render
     if ui_changed {
         unsafe { *model.render_needed.get() = true; }
+        
+        // Update physics step size if FPS changed
+        model.physics_step_size = Duration::from_secs_f32(1.0 / model.params.fixed_physics_fps);
     }
     
     // Handle reset boids
@@ -135,9 +156,52 @@ pub fn update(app: &App, model: &mut Model, update: Update) {
         unsafe { *model.render_needed.get() = true; }
     }
     
+    // Get current time
+    let current_time = Instant::now();
+    
+    // Calculate time since last update
+    let frame_time = current_time.duration_since(model.last_update_time);
+    model.last_update_time = current_time;
+    
+    // Add frame time to accumulator
+    model.physics_accumulator += frame_time;
+    
     // Only update boids if simulation is not paused
     if !model.params.pause_simulation {
-        update_boids(model);
+        // Track number of physics updates in this frame
+        let mut physics_updates_this_frame = 0;
+        
+        // Run fixed timestep updates
+        while model.physics_accumulator >= model.physics_step_size {
+            // Store previous state for interpolation
+            for boid in &mut model.boids {
+                boid.store_previous_state();
+            }
+            
+            // Update physics
+            update_boids(model);
+            
+            // Subtract step size from accumulator
+            model.physics_accumulator -= model.physics_step_size;
+            
+            // Increment counter
+            physics_updates_this_frame += 1;
+        }
+        
+        // Update debug info
+        model.debug_info.physics_updates_per_frame = physics_updates_this_frame;
+        
+        // Calculate interpolation alpha
+        if model.params.enable_interpolation {
+            model.interpolation_alpha = model.physics_accumulator.as_secs_f32() / model.physics_step_size.as_secs_f32();
+            model.interpolation_alpha = model.interpolation_alpha.clamp(0.0, 1.0);
+        } else {
+            model.interpolation_alpha = 1.0; // No interpolation, use current state
+        }
+        
+        // Update debug info with interpolation alpha
+        model.debug_info.interpolation_alpha = model.interpolation_alpha;
+        
         // Clear the caches when simulation is running
         unsafe { *model.cached_visible_boids.get() = None; }
         unsafe { *model.render_needed.get() = true; }
@@ -151,6 +215,21 @@ pub fn update(app: &App, model: &mut Model, update: Update) {
         // Camera has changed, force a re-render
         unsafe { *model.render_needed.get() = true; }
         model.last_camera_state = Some(current_camera_state);
+    }
+    
+    // Handle frame rate limiting for rendering
+    if model.params.target_render_fps > 0.0 {
+        let target_frame_duration = Duration::from_secs_f32(1.0 / model.params.target_render_fps);
+        let time_since_last_render = current_time.duration_since(model.last_render_time);
+        
+        if time_since_last_render < target_frame_duration {
+            // Not time to render yet
+            unsafe { *model.render_needed.get() = false; }
+        } else {
+            // Time to render
+            model.last_render_time = current_time;
+            unsafe { *model.render_needed.get() = true; }
+        }
     }
 }
 
@@ -604,7 +683,7 @@ fn update_boids_without_spatial_grid(model: &mut Model) {
 pub fn view(app: &App, model: &Model, frame: Frame) {
     // Skip rendering if not needed (when paused and nothing has changed)
     let render_needed = unsafe { *model.render_needed.get() };
-    if model.params.pause_simulation && !render_needed {
+    if !render_needed {
         // Only draw the UI
         model.egui.draw_to_frame(&frame).unwrap();
         return;
@@ -678,14 +757,27 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
         }
     } else {
         // When not paused, always recalculate visible boids
-        model.boids.iter()
-            .enumerate()
-            .filter(|(_, boid)| {
-                let pos = Vec2::new(boid.position.x, boid.position.y);
-                visible_area_with_margin.contains(pos)
-            })
-            .map(|(i, _)| i)
-            .collect()
+        // Use interpolated positions for culling if interpolation is enabled
+        if model.params.enable_interpolation {
+            model.boids.iter()
+                .enumerate()
+                .filter(|(_, boid)| {
+                    let interpolated_pos = boid.get_interpolated_position(model.interpolation_alpha);
+                    let pos = Vec2::new(interpolated_pos.x, interpolated_pos.y);
+                    visible_area_with_margin.contains(pos)
+                })
+                .map(|(i, _)| i)
+                .collect()
+        } else {
+            model.boids.iter()
+                .enumerate()
+                .filter(|(_, boid)| {
+                    let pos = Vec2::new(boid.position.x, boid.position.y);
+                    visible_area_with_margin.contains(pos)
+                })
+                .map(|(i, _)| i)
+                .collect()
+        }
     };
     
     // Track visible boid count for debug info
@@ -694,9 +786,9 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
         *visible_boids_count = visible_boids_indices.len();
     }
     
-    // Draw each visible boid
+    // Draw each visible boid with interpolation
     for &i in &visible_boids_indices {
-        model.boids[i].draw(&draw, &model.camera, window_rect);
+        model.boids[i].draw(&draw, &model.camera, window_rect, model.interpolation_alpha);
     }
     
     // Draw debug visualization if enabled
@@ -705,8 +797,15 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
         if !model.boids.is_empty() {
             let first_boid = &model.boids[0];
             
-            if visible_area_with_margin.contains(Vec2::new(first_boid.position.x, first_boid.position.y)) {
-                let screen_pos = model.camera.world_to_screen(Vec2::new(first_boid.position.x, first_boid.position.y), window_rect);
+            // Get interpolated position for debug visualization
+            let interpolated_pos = if model.params.enable_interpolation {
+                first_boid.get_interpolated_position(model.interpolation_alpha)
+            } else {
+                first_boid.position
+            };
+            
+            if visible_area_with_margin.contains(Vec2::new(interpolated_pos.x, interpolated_pos.y)) {
+                let screen_pos = model.camera.world_to_screen(Vec2::new(interpolated_pos.x, interpolated_pos.y), window_rect);
                 
                 // Scale radii based on zoom level
                 let sep_radius = model.params.separation_radius * model.camera.zoom;
@@ -737,12 +836,19 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
                     .stroke(BLUE)
                     .stroke_weight(1.0);
                 
+                // Get interpolated velocity for debug visualization
+                let interpolated_vel = if model.params.enable_interpolation {
+                    first_boid.get_interpolated_velocity(model.interpolation_alpha)
+                } else {
+                    first_boid.velocity
+                };
+                
                 // Velocity vector
                 draw.arrow()
                     .start(pt2(screen_pos.x, screen_pos.y))
                     .end(pt2(
-                        screen_pos.x + first_boid.velocity.x * 5.0 * model.camera.zoom,
-                        screen_pos.y + first_boid.velocity.y * 5.0 * model.camera.zoom
+                        screen_pos.x + interpolated_vel.x * 5.0 * model.camera.zoom,
+                        screen_pos.y + interpolated_vel.y * 5.0 * model.camera.zoom
                     ))
                     .color(YELLOW)
                     .stroke_weight(2.0);
