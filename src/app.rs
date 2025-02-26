@@ -216,9 +216,9 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
             let nearby_indices = spatial_grid.get_nearby_indices(boids[i].position, WORLD_SIZE);
             
             // Calculate forces
-            let separation = boids[i].separation(boids, &nearby_indices, params.separation_radius) * params.separation_weight;
-            let alignment = boids[i].alignment(boids, &nearby_indices, params.alignment_radius) * params.alignment_weight;
-            let cohesion = boids[i].cohesion(boids, &nearby_indices, params.cohesion_radius) * params.cohesion_weight;
+            let separation = boids[i].separation(boids, &nearby_indices, params.separation_radius, params.enable_squared_distance) * params.separation_weight;
+            let alignment = boids[i].alignment(boids, &nearby_indices, params.alignment_radius, params.enable_squared_distance) * params.alignment_weight;
+            let cohesion = boids[i].cohesion(boids, &nearby_indices, params.cohesion_radius, params.enable_squared_distance) * params.cohesion_weight;
             
             // Return combined forces
             separation + alignment + cohesion
@@ -230,9 +230,9 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
             let nearby_indices = spatial_grid.get_nearby_indices(boids[i].position, WORLD_SIZE);
             
             // Calculate forces
-            let separation = boids[i].separation(boids, &nearby_indices, params.separation_radius) * params.separation_weight;
-            let alignment = boids[i].alignment(boids, &nearby_indices, params.alignment_radius) * params.alignment_weight;
-            let cohesion = boids[i].cohesion(boids, &nearby_indices, params.cohesion_radius) * params.cohesion_weight;
+            let separation = boids[i].separation(boids, &nearby_indices, params.separation_radius, params.enable_squared_distance) * params.separation_weight;
+            let alignment = boids[i].alignment(boids, &nearby_indices, params.alignment_radius, params.enable_squared_distance) * params.alignment_weight;
+            let cohesion = boids[i].cohesion(boids, &nearby_indices, params.cohesion_radius, params.enable_squared_distance) * params.cohesion_weight;
             
             // Store combined forces
             accelerations.push(separation + alignment + cohesion);

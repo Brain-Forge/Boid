@@ -60,6 +60,7 @@ pub fn update_ui(
             ui.collapsing("Performance Tuning", |ui| {
                 ui.checkbox(&mut params.enable_parallel, "Enable Parallel Processing");
                 ui.checkbox(&mut params.enable_spatial_grid, "Enable Spatial Grid");
+                ui.checkbox(&mut params.enable_squared_distance, "Use Squared Distance (Avoid sqrt)");
                 ui.add(egui::Slider::new(&mut params.cell_size_factor, SimulationParams::get_cell_size_factor_range()).text("Cell Size Factor"));
                 
                 ui.separator();

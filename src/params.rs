@@ -23,6 +23,7 @@ pub struct SimulationParams {
     pub enable_parallel: bool,
     pub enable_spatial_grid: bool,
     pub cell_size_factor: f32,  // Multiplier for cell size relative to perception radius
+    pub enable_squared_distance: bool, // Use squared distance calculations to avoid sqrt operations
     
     // Internal state for tracking changes
     previous_values: Option<ParamSnapshot>,
@@ -40,6 +41,7 @@ struct ParamSnapshot {
     max_speed: f32,
     show_debug: bool,
     pause_simulation: bool,
+    enable_squared_distance: bool,
 }
 
 impl Default for SimulationParams {
@@ -59,6 +61,7 @@ impl Default for SimulationParams {
             enable_parallel: true,
             enable_spatial_grid: true,
             cell_size_factor: 1.0,
+            enable_squared_distance: true, // Enable by default for better performance
             // Initialize with no previous values
             previous_values: None,
         }
@@ -79,6 +82,7 @@ impl SimulationParams {
             max_speed: self.max_speed,
             show_debug: self.show_debug,
             pause_simulation: self.pause_simulation,
+            enable_squared_distance: self.enable_squared_distance,
         });
     }
     
@@ -105,7 +109,8 @@ impl SimulationParams {
                self.cohesion_radius != prev.cohesion_radius ||
                self.max_speed != prev.max_speed ||
                self.show_debug != prev.show_debug ||
-               self.pause_simulation != prev.pause_simulation {
+               self.pause_simulation != prev.pause_simulation ||
+               self.enable_squared_distance != prev.enable_squared_distance {
                 ui_changed = true;
             }
         }
@@ -132,6 +137,6 @@ impl SimulationParams {
     }
     
     pub fn get_cell_size_factor_range() -> std::ops::RangeInclusive<f32> {
-        0.05..=10.0
+        0.01..=10.0
     }
 } 

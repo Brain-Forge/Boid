@@ -83,16 +83,46 @@ impl Boid {
     }
     
     // Calculate separation force (avoid crowding neighbors)
-    pub fn separation(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32) -> Vec2 {
+    pub fn separation(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32, use_squared_distance: bool) -> Vec2 {
         let mut steering = Vec2::ZERO;
         let mut count = 0;
         
+        // Pre-calculate squared radius for optimization
+        let radius_squared = perception_radius * perception_radius;
+        
         for &i in neighbor_indices {
             let other = &boids[i];
-            let d = self.position.distance(other.position);
+            
+            // Choose between regular or squared distance calculation
+            let (d, d_squared) = if use_squared_distance {
+                // Calculate squared distance directly
+                let dx = self.position.x - other.position.x;
+                let dy = self.position.y - other.position.y;
+                let d_squared = dx * dx + dy * dy;
+                
+                // Only calculate actual distance if needed for weighting
+                let d = if d_squared > 0.0 && d_squared < radius_squared {
+                    d_squared.sqrt()
+                } else {
+                    0.0
+                };
+                
+                (d, d_squared)
+            } else {
+                // Use regular distance calculation
+                let d = self.position.distance(other.position);
+                (d, d * d)
+            };
+            
+            // Check if within perception radius using appropriate comparison
+            let is_within_radius = if use_squared_distance {
+                d_squared > 0.0 && d_squared < radius_squared
+            } else {
+                d > 0.0 && d < perception_radius
+            };
             
             // If this is not the same boid and it's within perception radius
-            if d > 0.0 && d < perception_radius {
+            if is_within_radius {
                 // Calculate vector pointing away from neighbor
                 let mut diff = self.position - other.position;
                 diff = diff.normalize() / d;  // Weight by distance
@@ -118,16 +148,32 @@ impl Boid {
     }
     
     // Calculate alignment force (steer towards average heading of neighbors)
-    pub fn alignment(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32) -> Vec2 {
+    pub fn alignment(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32, use_squared_distance: bool) -> Vec2 {
         let mut steering = Vec2::ZERO;
         let mut count = 0;
         
+        // Pre-calculate squared radius for optimization
+        let radius_squared = perception_radius * perception_radius;
+        
         for &i in neighbor_indices {
             let other = &boids[i];
-            let d = self.position.distance(other.position);
+            
+            // Choose between regular or squared distance calculation
+            let is_within_radius = if use_squared_distance {
+                // Calculate squared distance directly
+                let dx = self.position.x - other.position.x;
+                let dy = self.position.y - other.position.y;
+                let d_squared = dx * dx + dy * dy;
+                
+                d_squared > 0.0 && d_squared < radius_squared
+            } else {
+                // Use regular distance calculation
+                let d = self.position.distance(other.position);
+                d > 0.0 && d < perception_radius
+            };
             
             // If this is not the same boid and it's within perception radius
-            if d > 0.0 && d < perception_radius {
+            if is_within_radius {
                 steering += other.velocity;
                 count += 1;
             }
@@ -148,16 +194,32 @@ impl Boid {
     }
     
     // Calculate cohesion force (steer towards average position of neighbors)
-    pub fn cohesion(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32) -> Vec2 {
+    pub fn cohesion(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32, use_squared_distance: bool) -> Vec2 {
         let mut steering = Vec2::ZERO;
         let mut count = 0;
         
+        // Pre-calculate squared radius for optimization
+        let radius_squared = perception_radius * perception_radius;
+        
         for &i in neighbor_indices {
             let other = &boids[i];
-            let d = self.position.distance(other.position);
+            
+            // Choose between regular or squared distance calculation
+            let is_within_radius = if use_squared_distance {
+                // Calculate squared distance directly
+                let dx = self.position.x - other.position.x;
+                let dy = self.position.y - other.position.y;
+                let d_squared = dx * dx + dy * dy;
+                
+                d_squared > 0.0 && d_squared < radius_squared
+            } else {
+                // Use regular distance calculation
+                let d = self.position.distance(other.position);
+                d > 0.0 && d < perception_radius
+            };
             
             // If this is not the same boid and it's within perception radius
-            if d > 0.0 && d < perception_radius {
+            if is_within_radius {
                 steering += Vec2::new(other.position.x, other.position.y);
                 count += 1;
             }
@@ -189,9 +251,10 @@ impl Boid {
     
     // Original flock method for backward compatibility (without spatial grid)
     pub fn flock(&mut self, boids: &[Boid], params: &SimulationParams) {
-        let separation = self.separation_original(boids, params.separation_radius) * params.separation_weight;
-        let alignment = self.alignment_original(boids, params.alignment_radius) * params.alignment_weight;
-        let cohesion = self.cohesion_original(boids, params.cohesion_radius) * params.cohesion_weight;
+        // Use the original methods but pass the squared distance parameter
+        let separation = self.separation_original(boids, params.separation_radius, params.enable_squared_distance) * params.separation_weight;
+        let alignment = self.alignment_original(boids, params.alignment_radius, params.enable_squared_distance) * params.alignment_weight;
+        let cohesion = self.cohesion_original(boids, params.cohesion_radius, params.enable_squared_distance) * params.cohesion_weight;
         
         self.apply_force(separation);
         self.apply_force(alignment);
@@ -199,15 +262,44 @@ impl Boid {
     }
     
     // Original versions of the flocking behaviors (without spatial grid)
-    fn separation_original(&self, boids: &[Boid], perception_radius: f32) -> Vec2 {
+    fn separation_original(&self, boids: &[Boid], perception_radius: f32, use_squared_distance: bool) -> Vec2 {
         let mut steering = Vec2::ZERO;
         let mut count = 0;
         
+        // Pre-calculate squared radius for optimization
+        let radius_squared = perception_radius * perception_radius;
+        
         for other in boids {
-            let d = self.position.distance(other.position);
+            // Choose between regular or squared distance calculation
+            let (d, d_squared) = if use_squared_distance {
+                // Calculate squared distance directly
+                let dx = self.position.x - other.position.x;
+                let dy = self.position.y - other.position.y;
+                let d_squared = dx * dx + dy * dy;
+                
+                // Only calculate actual distance if needed for weighting
+                let d = if d_squared > 0.0 && d_squared < radius_squared {
+                    d_squared.sqrt()
+                } else {
+                    0.0
+                };
+                
+                (d, d_squared)
+            } else {
+                // Use regular distance calculation
+                let d = self.position.distance(other.position);
+                (d, d * d)
+            };
+            
+            // Check if within perception radius using appropriate comparison
+            let is_within_radius = if use_squared_distance {
+                d_squared > 0.0 && d_squared < radius_squared
+            } else {
+                d > 0.0 && d < perception_radius
+            };
             
             // If this is not the same boid and it's within perception radius
-            if d > 0.0 && d < perception_radius {
+            if is_within_radius {
                 // Calculate vector pointing away from neighbor
                 let mut diff = self.position - other.position;
                 diff = diff.normalize() / d;  // Weight by distance
@@ -232,15 +324,30 @@ impl Boid {
         steering
     }
     
-    fn alignment_original(&self, boids: &[Boid], perception_radius: f32) -> Vec2 {
+    fn alignment_original(&self, boids: &[Boid], perception_radius: f32, use_squared_distance: bool) -> Vec2 {
         let mut steering = Vec2::ZERO;
         let mut count = 0;
         
+        // Pre-calculate squared radius for optimization
+        let radius_squared = perception_radius * perception_radius;
+        
         for other in boids {
-            let d = self.position.distance(other.position);
+            // Choose between regular or squared distance calculation
+            let is_within_radius = if use_squared_distance {
+                // Calculate squared distance directly
+                let dx = self.position.x - other.position.x;
+                let dy = self.position.y - other.position.y;
+                let d_squared = dx * dx + dy * dy;
+                
+                d_squared > 0.0 && d_squared < radius_squared
+            } else {
+                // Use regular distance calculation
+                let d = self.position.distance(other.position);
+                d > 0.0 && d < perception_radius
+            };
             
             // If this is not the same boid and it's within perception radius
-            if d > 0.0 && d < perception_radius {
+            if is_within_radius {
                 steering += other.velocity;
                 count += 1;
             }
@@ -260,15 +367,30 @@ impl Boid {
         steering
     }
     
-    fn cohesion_original(&self, boids: &[Boid], perception_radius: f32) -> Vec2 {
+    fn cohesion_original(&self, boids: &[Boid], perception_radius: f32, use_squared_distance: bool) -> Vec2 {
         let mut steering = Vec2::ZERO;
         let mut count = 0;
         
+        // Pre-calculate squared radius for optimization
+        let radius_squared = perception_radius * perception_radius;
+        
         for other in boids {
-            let d = self.position.distance(other.position);
+            // Choose between regular or squared distance calculation
+            let is_within_radius = if use_squared_distance {
+                // Calculate squared distance directly
+                let dx = self.position.x - other.position.x;
+                let dy = self.position.y - other.position.y;
+                let d_squared = dx * dx + dy * dy;
+                
+                d_squared > 0.0 && d_squared < radius_squared
+            } else {
+                // Use regular distance calculation
+                let d = self.position.distance(other.position);
+                d > 0.0 && d < perception_radius
+            };
             
             // If this is not the same boid and it's within perception radius
-            if d > 0.0 && d < perception_radius {
+            if is_within_radius {
                 steering += Vec2::new(other.position.x, other.position.y);
                 count += 1;
             }
