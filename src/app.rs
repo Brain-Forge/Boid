@@ -206,68 +206,312 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
         model.spatial_grid.insert(i, boid.position, WORLD_SIZE);
     }
     
-    // Process each boid with spatial partitioning
-    let boids = &model.boids;
-    let params = &model.params;
-    let spatial_grid = &model.spatial_grid;
-    
     // Pre-calculate weights to avoid multiplication in the inner loop
-    let separation_weight = params.separation_weight;
-    let alignment_weight = params.alignment_weight;
-    let cohesion_weight = params.cohesion_weight;
+    let separation_weight = model.params.separation_weight;
+    let alignment_weight = model.params.alignment_weight;
+    let cohesion_weight = model.params.cohesion_weight;
     
-    // Collect accelerations first to avoid borrow checker issues
-    let mut accelerations = Vec::with_capacity(boids.len());
+    // Extract positions and velocities for the spatial grid's calculations
+    let boid_positions: Vec<Point2> = model.boids.iter().map(|boid| boid.position).collect();
+    let boid_velocities: Vec<Vec2> = model.boids.iter().map(|boid| boid.velocity).collect();
+    
+    // Pre-calculate squared radii
+    let sep_radius_sq = model.params.separation_radius * model.params.separation_radius;
+    let align_radius_sq = model.params.alignment_radius * model.params.alignment_radius;
+    let cohesion_radius_sq = model.params.cohesion_radius * model.params.cohesion_radius;
     
     // Choose between parallel and sequential processing based on the setting
     if model.params.enable_parallel {
-        // Phase 1: Calculate accelerations in parallel
-        accelerations = (0..boids.len()).into_par_iter().map(|i| {
-            // Get nearby boids from the spatial grid
-            let nearby_indices = spatial_grid.get_nearby_indices(boids[i].position, WORLD_SIZE);
+        // For parallel processing, we need to pre-compute all neighbor data
+        let mut neighbor_data = Vec::with_capacity(model.boids.len());
+        
+        // First pass: gather all neighbor data
+        for (_i, boid) in model.boids.iter().enumerate() {
+            let nearby_with_distances = model.spatial_grid.get_nearby_with_distances(
+                boid.position, 
+                &boid_positions, 
+                WORLD_SIZE
+            );
             
-            // Calculate forces
-            let separation = boids[i].separation(boids, &nearby_indices, params.separation_radius, params.enable_squared_distance);
-            let alignment = boids[i].alignment(boids, &nearby_indices, params.alignment_radius, params.enable_squared_distance);
-            let cohesion = boids[i].cohesion(boids, &nearby_indices, params.cohesion_radius, params.enable_squared_distance);
-            
-            // Combine forces with weights (avoid creating intermediate vectors)
-            let mut combined_force = Vec2::ZERO;
-            combined_force.x = separation.x * separation_weight + alignment.x * alignment_weight + cohesion.x * cohesion_weight;
-            combined_force.y = separation.y * separation_weight + alignment.y * alignment_weight + cohesion.y * cohesion_weight;
-            
-            combined_force
-        }).collect();
-    } else {
-        // Sequential processing
-        for i in 0..boids.len() {
-            // Get nearby boids from the spatial grid
-            let nearby_indices = spatial_grid.get_nearby_indices(boids[i].position, WORLD_SIZE);
-            
-            // Calculate forces
-            let separation = boids[i].separation(boids, &nearby_indices, params.separation_radius, params.enable_squared_distance);
-            let alignment = boids[i].alignment(boids, &nearby_indices, params.alignment_radius, params.enable_squared_distance);
-            let cohesion = boids[i].cohesion(boids, &nearby_indices, params.cohesion_radius, params.enable_squared_distance);
-            
-            // Combine forces with weights (avoid creating intermediate vectors)
-            let mut combined_force = Vec2::ZERO;
-            combined_force.x = separation.x * separation_weight + alignment.x * alignment_weight + cohesion.x * cohesion_weight;
-            combined_force.y = separation.y * separation_weight + alignment.y * alignment_weight + cohesion.y * cohesion_weight;
-            
-            accelerations.push(combined_force);
+            // Clone the data to avoid borrowing issues
+            let neighbors: Vec<_> = nearby_with_distances.iter().map(|&n| n).collect();
+            neighbor_data.push(neighbors);
         }
-    }
-    
-    // Phase 2: Apply accelerations and update positions
-    for i in 0..model.boids.len() {
-        let boid = &mut model.boids[i];
         
-        // Apply the precalculated acceleration
-        boid.apply_force(accelerations[i]);
-        
-        // Update position based on velocity and acceleration
-        boid.update();
-        boid.wrap_edges(WORLD_SIZE);
+        // Second pass: calculate and apply forces in parallel
+        model.boids.par_iter_mut().enumerate().for_each(|(_i, boid)| {
+            let neighbors = &neighbor_data[_i];
+            
+            // Calculate forces
+            let mut separation = Vec2::ZERO;
+            let mut alignment = Vec2::ZERO;
+            let mut cohesion = Vec2::ZERO;
+            let mut sep_count = 0;
+            let mut align_count = 0;
+            let mut cohesion_count = 0;
+            
+            // Process all neighbors in a single pass
+            for &neighbor in neighbors {
+                let d_squared = neighbor.distance_squared;
+                let other_idx = neighbor.index;
+                
+                // Separation
+                if d_squared < sep_radius_sq {
+                    // Calculate vector pointing away from neighbor
+                    let dx = boid.position.x - boid_positions[other_idx].x;
+                    let dy = boid.position.y - boid_positions[other_idx].y;
+                    
+                    // Only calculate actual distance if needed for weighting
+                    let d = d_squared.sqrt();
+                    
+                    // Weight by distance (closer boids have more influence)
+                    separation.x += (dx / d) / d;
+                    separation.y += (dy / d) / d;
+                    sep_count += 1;
+                }
+                
+                // Alignment
+                if d_squared < align_radius_sq {
+                    alignment += boid_velocities[other_idx];
+                    align_count += 1;
+                }
+                
+                // Cohesion
+                if d_squared < cohesion_radius_sq {
+                    cohesion.x += boid_positions[other_idx].x;
+                    cohesion.y += boid_positions[other_idx].y;
+                    cohesion_count += 1;
+                }
+            }
+            
+            // Process separation
+            if sep_count > 0 {
+                separation /= sep_count as f32;
+                
+                let separation_length_squared = separation.length_squared();
+                if separation_length_squared > 0.0 {
+                    // Implement Reynolds: Steering = Desired - Velocity
+                    let separation_length = separation_length_squared.sqrt();
+                    let desired = separation * (boid.max_speed / separation_length);
+                    
+                    separation = desired - boid.velocity;
+                    
+                    // Limit force
+                    let force_squared = separation.length_squared();
+                    let max_force_squared = boid.max_force * boid.max_force;
+                    
+                    if force_squared > max_force_squared {
+                        let force_length = force_squared.sqrt();
+                        separation *= boid.max_force / force_length;
+                    }
+                }
+            }
+            
+            // Process alignment
+            if align_count > 0 {
+                alignment /= align_count as f32;
+                
+                let alignment_length_squared = alignment.length_squared();
+                if alignment_length_squared > 0.0 {
+                    // Implement Reynolds: Steering = Desired - Velocity
+                    let alignment_length = alignment_length_squared.sqrt();
+                    let desired = alignment * (boid.max_speed / alignment_length);
+                    
+                    alignment = desired - boid.velocity;
+                    
+                    // Limit force
+                    let force_squared = alignment.length_squared();
+                    let max_force_squared = boid.max_force * boid.max_force;
+                    
+                    if force_squared > max_force_squared {
+                        let force_length = force_squared.sqrt();
+                        alignment *= boid.max_force / force_length;
+                    }
+                }
+            }
+            
+            // Process cohesion
+            if cohesion_count > 0 {
+                cohesion /= cohesion_count as f32;
+                
+                // Create desired velocity towards target
+                let desired = cohesion - Vec2::new(boid.position.x, boid.position.y);
+                
+                let desired_length_squared = desired.length_squared();
+                if desired_length_squared > 0.0 {
+                    // Scale to maximum speed (only normalize if needed)
+                    let desired_length = desired_length_squared.sqrt();
+                    let desired_normalized = desired * (boid.max_speed / desired_length);
+                    
+                    // Implement Reynolds: Steering = Desired - Velocity
+                    let mut steering = desired_normalized - boid.velocity;
+                    
+                    // Limit force
+                    let force_squared = steering.length_squared();
+                    let max_force_squared = boid.max_force * boid.max_force;
+                    
+                    if force_squared > max_force_squared {
+                        let force_length = force_squared.sqrt();
+                        steering *= boid.max_force / force_length;
+                    }
+                    
+                    cohesion = steering;
+                }
+            }
+            
+            // Combine forces with weights
+            let mut combined_force = Vec2::ZERO;
+            combined_force.x = separation.x * separation_weight + alignment.x * alignment_weight + cohesion.x * cohesion_weight;
+            combined_force.y = separation.y * separation_weight + alignment.y * alignment_weight + cohesion.y * cohesion_weight;
+            
+            // Apply the calculated acceleration
+            boid.apply_force(combined_force);
+            
+            // Update position
+            boid.update();
+            
+            // Wrap around edges
+            boid.wrap_edges(WORLD_SIZE);
+        });
+    } else {
+        // Sequential processing for better cache locality
+        for i in 0..model.boids.len() {
+            let boid_position = model.boids[i].position;
+            
+            // Get nearby boids with pre-computed distances
+            let nearby_with_distances = model.spatial_grid.get_nearby_with_distances(boid_position, &boid_positions, WORLD_SIZE);
+            
+            // Calculate forces
+            let mut separation = Vec2::ZERO;
+            let mut alignment = Vec2::ZERO;
+            let mut cohesion = Vec2::ZERO;
+            let mut sep_count = 0;
+            let mut align_count = 0;
+            let mut cohesion_count = 0;
+            
+            // Process all neighbors in a single pass
+            for neighbor in nearby_with_distances {
+                let other_idx = neighbor.index;
+                let d_squared = neighbor.distance_squared;
+                
+                // Separation
+                if d_squared < sep_radius_sq {
+                    // Calculate vector pointing away from neighbor
+                    let dx = boid_position.x - boid_positions[other_idx].x;
+                    let dy = boid_position.y - boid_positions[other_idx].y;
+                    
+                    // Only calculate actual distance if needed for weighting
+                    let d = d_squared.sqrt();
+                    
+                    // Weight by distance (closer boids have more influence)
+                    separation.x += (dx / d) / d;
+                    separation.y += (dy / d) / d;
+                    sep_count += 1;
+                }
+                
+                // Alignment
+                if d_squared < align_radius_sq {
+                    alignment += boid_velocities[other_idx];
+                    align_count += 1;
+                }
+                
+                // Cohesion
+                if d_squared < cohesion_radius_sq {
+                    cohesion.x += boid_positions[other_idx].x;
+                    cohesion.y += boid_positions[other_idx].y;
+                    cohesion_count += 1;
+                }
+            }
+            
+            // Process separation
+            if sep_count > 0 {
+                separation /= sep_count as f32;
+                
+                let separation_length_squared = separation.length_squared();
+                if separation_length_squared > 0.0 {
+                    // Implement Reynolds: Steering = Desired - Velocity
+                    let separation_length = separation_length_squared.sqrt();
+                    let desired = separation * (model.boids[i].max_speed / separation_length);
+                    
+                    separation = desired - model.boids[i].velocity;
+                    
+                    // Limit force
+                    let force_squared = separation.length_squared();
+                    let max_force_squared = model.boids[i].max_force * model.boids[i].max_force;
+                    
+                    if force_squared > max_force_squared {
+                        let force_length = force_squared.sqrt();
+                        separation *= model.boids[i].max_force / force_length;
+                    }
+                }
+            }
+            
+            // Process alignment
+            if align_count > 0 {
+                alignment /= align_count as f32;
+                
+                let alignment_length_squared = alignment.length_squared();
+                if alignment_length_squared > 0.0 {
+                    // Implement Reynolds: Steering = Desired - Velocity
+                    let alignment_length = alignment_length_squared.sqrt();
+                    let desired = alignment * (model.boids[i].max_speed / alignment_length);
+                    
+                    alignment = desired - model.boids[i].velocity;
+                    
+                    // Limit force
+                    let force_squared = alignment.length_squared();
+                    let max_force_squared = model.boids[i].max_force * model.boids[i].max_force;
+                    
+                    if force_squared > max_force_squared {
+                        let force_length = force_squared.sqrt();
+                        alignment *= model.boids[i].max_force / force_length;
+                    }
+                }
+            }
+            
+            // Process cohesion
+            if cohesion_count > 0 {
+                cohesion /= cohesion_count as f32;
+                
+                // Create desired velocity towards target
+                let desired = cohesion - Vec2::new(boid_position.x, boid_position.y);
+                
+                let desired_length_squared = desired.length_squared();
+                if desired_length_squared > 0.0 {
+                    // Scale to maximum speed (only normalize if needed)
+                    let desired_length = desired_length_squared.sqrt();
+                    let desired_normalized = desired * (model.boids[i].max_speed / desired_length);
+                    
+                    // Implement Reynolds: Steering = Desired - Velocity
+                    let mut steering = desired_normalized - model.boids[i].velocity;
+                    
+                    // Limit force
+                    let force_squared = steering.length_squared();
+                    let max_force_squared = model.boids[i].max_force * model.boids[i].max_force;
+                    
+                    if force_squared > max_force_squared {
+                        let force_length = force_squared.sqrt();
+                        steering *= model.boids[i].max_force / force_length;
+                    }
+                    
+                    cohesion = steering;
+                }
+            }
+            
+            // Combine forces with weights
+            let mut combined_force = Vec2::ZERO;
+            combined_force.x = separation.x * separation_weight + alignment.x * alignment_weight + cohesion.x * cohesion_weight;
+            combined_force.y = separation.y * separation_weight + alignment.y * alignment_weight + cohesion.y * cohesion_weight;
+            
+            // Apply the calculated acceleration
+            model.boids[i].apply_force(combined_force);
+            
+            // Update position
+            model.boids[i].update();
+            
+            // Wrap around edges
+            model.boids[i].wrap_edges(WORLD_SIZE);
+        }
     }
 }
 

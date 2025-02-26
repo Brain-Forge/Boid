@@ -11,7 +11,7 @@
  * - Normalizing vectors only when necessary
  * - Avoiding unnecessary vector instantiations
  * - Using squared distances where possible
- * - Caching intermediate calculations
+ * - Using a spatial grid for efficient neighbor lookups
  */
 
 use nannou::prelude::*;
@@ -98,177 +98,6 @@ impl Boid {
         }
     }
     
-    // Calculate separation force (avoid crowding neighbors)
-    pub fn separation(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32, _use_squared_distance: bool) -> Vec2 {
-        let mut steering = Vec2::ZERO;
-        let mut count = 0;
-        
-        // Pre-calculate squared radius for optimization
-        let radius_squared = perception_radius * perception_radius;
-        
-        for &i in neighbor_indices {
-            let other = &boids[i];
-            
-            // Calculate squared distance directly
-            let dx = self.position.x - other.position.x;
-            let dy = self.position.y - other.position.y;
-            let d_squared = dx * dx + dy * dy;
-            
-            // Skip if it's the same boid or outside perception radius
-            if d_squared <= 0.0 || d_squared >= radius_squared {
-                continue;
-            }
-            
-            // Calculate vector pointing away from neighbor
-            // Only calculate actual distance if needed for weighting
-            let d = d_squared.sqrt();
-            
-            // Avoid division by zero
-            if d > 0.0 {
-                // Weight by distance (closer boids have more influence)
-                // Reuse dx and dy instead of creating a new vector
-                steering.x += (dx / d) / d;
-                steering.y += (dy / d) / d;
-                count += 1;
-            }
-        }
-        
-        if count > 0 {
-            steering /= count as f32;
-            
-            let steering_length_squared = steering.length_squared();
-            if steering_length_squared > 0.0 {
-                // Implement Reynolds: Steering = Desired - Velocity
-                // Only normalize if needed
-                let steering_length = steering_length_squared.sqrt();
-                let desired = steering * (self.max_speed / steering_length);
-                
-                steering = desired - self.velocity;
-                
-                // Limit force
-                let force_squared = steering.length_squared();
-                let max_force_squared = self.max_force * self.max_force;
-                
-                if force_squared > max_force_squared {
-                    let force_length = force_squared.sqrt();
-                    steering *= self.max_force / force_length;
-                }
-            }
-        }
-        
-        steering
-    }
-    
-    // Calculate alignment force (steer towards average heading of neighbors)
-    pub fn alignment(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32, _use_squared_distance: bool) -> Vec2 {
-        let mut steering = Vec2::ZERO;
-        let mut count = 0;
-        
-        // Pre-calculate squared radius for optimization
-        let radius_squared = perception_radius * perception_radius;
-        
-        for &i in neighbor_indices {
-            let other = &boids[i];
-            
-            // Calculate squared distance directly
-            let dx = self.position.x - other.position.x;
-            let dy = self.position.y - other.position.y;
-            let d_squared = dx * dx + dy * dy;
-            
-            // Skip if it's the same boid or outside perception radius
-            if d_squared <= 0.0 || d_squared >= radius_squared {
-                continue;
-            }
-            
-            // Accumulate velocities
-            steering += other.velocity;
-            count += 1;
-        }
-        
-        if count > 0 {
-            steering /= count as f32;
-            
-            // Only normalize if the steering vector has magnitude
-            let steering_length_squared = steering.length_squared();
-            if steering_length_squared > 0.0 {
-                // Implement Reynolds: Steering = Desired - Velocity
-                let steering_length = steering_length_squared.sqrt();
-                let desired = steering * (self.max_speed / steering_length);
-                
-                steering = desired - self.velocity;
-                
-                // Limit force
-                let force_squared = steering.length_squared();
-                let max_force_squared = self.max_force * self.max_force;
-                
-                if force_squared > max_force_squared {
-                    let force_length = force_squared.sqrt();
-                    steering *= self.max_force / force_length;
-                }
-            }
-        }
-        
-        steering
-    }
-    
-    // Calculate cohesion force (steer towards average position of neighbors)
-    pub fn cohesion(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32, _use_squared_distance: bool) -> Vec2 {
-        let mut sum_position = Vec2::ZERO;
-        let mut count = 0;
-        
-        // Pre-calculate squared radius for optimization
-        let radius_squared = perception_radius * perception_radius;
-        
-        for &i in neighbor_indices {
-            let other = &boids[i];
-            
-            // Calculate squared distance directly
-            let dx = self.position.x - other.position.x;
-            let dy = self.position.y - other.position.y;
-            let d_squared = dx * dx + dy * dy;
-            
-            // Skip if it's the same boid or outside perception radius
-            if d_squared <= 0.0 || d_squared >= radius_squared {
-                continue;
-            }
-            
-            // Accumulate positions (reuse existing Vec2 from position)
-            sum_position.x += other.position.x;
-            sum_position.y += other.position.y;
-            count += 1;
-        }
-        
-        if count > 0 {
-            sum_position /= count as f32;
-            
-            // Create desired velocity towards target
-            let desired = sum_position - Vec2::new(self.position.x, self.position.y);
-            
-            let desired_length_squared = desired.length_squared();
-            if desired_length_squared > 0.0 {
-                // Scale to maximum speed (only normalize if needed)
-                let desired_length = desired_length_squared.sqrt();
-                let desired_normalized = desired * (self.max_speed / desired_length);
-                
-                // Implement Reynolds: Steering = Desired - Velocity
-                let mut steering = desired_normalized - self.velocity;
-                
-                // Limit force
-                let force_squared = steering.length_squared();
-                let max_force_squared = self.max_force * self.max_force;
-                
-                if force_squared > max_force_squared {
-                    let force_length = force_squared.sqrt();
-                    steering *= self.max_force / force_length;
-                }
-                
-                return steering;
-            }
-        }
-        
-        Vec2::ZERO
-    }
-    
     // Original versions of the flocking behaviors (without spatial grid)
     pub fn separation_original(&self, boids: &[Boid], perception_radius: f32, _use_squared_distance: bool) -> Vec2 {
         let mut steering = Vec2::ZERO;
@@ -325,6 +154,7 @@ impl Boid {
         steering
     }
     
+    // Original versions of the flocking behaviors (without spatial grid)
     pub fn alignment_original(&self, boids: &[Boid], perception_radius: f32, _use_squared_distance: bool) -> Vec2 {
         let mut steering = Vec2::ZERO;
         let mut count = 0;
@@ -374,6 +204,7 @@ impl Boid {
         steering
     }
     
+    // Original versions of the flocking behaviors (without spatial grid)
     pub fn cohesion_original(&self, boids: &[Boid], perception_radius: f32, _use_squared_distance: bool) -> Vec2 {
         let mut sum_position = Vec2::ZERO;
         let mut count = 0;

@@ -10,36 +10,50 @@
  * - Pre-allocating memory for results to avoid reallocations
  * - Using integer arithmetic where possible
  * - Avoiding unnecessary bounds checks with clamping
+ * - Providing pre-computed distances for better performance
  */
 
 use nannou::prelude::*;
+
+/// A neighbor entry with pre-computed distance information
+#[derive(Clone, Copy)]
+pub struct NeighborEntry {
+    pub index: usize,
+    pub distance_squared: f32,
+}
 
 pub struct SpatialGrid {
     pub cell_size: f32,
     pub grid: Vec<Vec<usize>>,
     pub grid_size: usize,
-    // Cache for nearby indices to avoid reallocations
-    nearby_indices_cache: Vec<usize>,
+    // Cache for nearby indices with distances to avoid reallocations
+    nearby_with_distance_cache: Vec<NeighborEntry>,
 }
 
 impl SpatialGrid {
     pub fn new(cell_size: f32, world_size: f32) -> Self {
         let grid_size = (world_size / cell_size).ceil() as usize;
+        
+        // Pre-allocate grid with capacity
         let mut grid = Vec::with_capacity(grid_size * grid_size);
         
-        // Initialize an empty grid
+        // Initialize an empty grid with pre-allocated capacity for each cell
+        // Estimate average boids per cell based on typical distribution
+        let estimated_boids_per_cell = 10;
         for _ in 0..(grid_size * grid_size) {
-            grid.push(Vec::new());
+            let mut cell = Vec::with_capacity(estimated_boids_per_cell);
+            cell.clear(); // Ensure it's empty but with capacity
+            grid.push(cell);
         }
         
-        // Pre-allocate cache for nearby indices (9 cells * estimated boids per cell)
-        let estimated_capacity = 9 * 10; // Assuming ~10 boids per cell on average
+        // Pre-allocate caches for nearby indices (9 cells * estimated boids per cell)
+        let estimated_capacity = 9 * estimated_boids_per_cell;
         
         Self {
             cell_size,
             grid,
             grid_size,
-            nearby_indices_cache: Vec::with_capacity(estimated_capacity),
+            nearby_with_distance_cache: Vec::with_capacity(estimated_capacity),
         }
     }
     
@@ -60,6 +74,7 @@ impl SpatialGrid {
         for cell in &mut self.grid {
             cell.clear();
         }
+        // No need to clear caches as they'll be overwritten
     }
     
     // Insert a boid into the grid
@@ -69,17 +84,17 @@ impl SpatialGrid {
         self.grid[cell_index].push(boid_index);
     }
     
-    // Get boid indices within and adjacent to the cell containing the given position
-    pub fn get_nearby_indices(&self, position: Point2, world_size: f32) -> Vec<usize> {
+    // Get boid indices with pre-computed squared distances
+    // This avoids redundant distance calculations in the force computations
+    pub fn get_nearby_with_distances(&mut self, position: Point2, boids: &[nannou::prelude::Point2], world_size: f32) -> &[NeighborEntry] {
         let half_world = world_size / 2.0;
+        
+        // Clear the cache but keep its capacity
+        self.nearby_with_distance_cache.clear();
         
         // Get the cell coordinates
         let grid_x = ((position.x + half_world) / self.cell_size).floor() as isize;
         let grid_y = ((position.y + half_world) / self.cell_size).floor() as isize;
-        
-        // Create a new result vector or reuse the cached one
-        // Note: In a multi-threaded context, we'd need to clone this instead
-        let mut result = Vec::with_capacity(self.nearby_indices_cache.capacity());
         
         // Pre-calculate grid size as isize to avoid repeated casts
         let grid_size_isize = self.grid_size as isize;
@@ -105,11 +120,30 @@ impl SpatialGrid {
                 
                 let cell_index = y_index + check_x as usize;
                 
-                // Add all boids in this cell to the result
-                result.extend_from_slice(&self.grid[cell_index]);
+                // Add all boids in this cell to the result with pre-computed distances
+                for &boid_index in &self.grid[cell_index] {
+                    if boid_index < boids.len() {
+                        let other_pos = boids[boid_index];
+                        
+                        // Skip if it's the same boid
+                        if position == other_pos {
+                            continue;
+                        }
+                        
+                        // Calculate squared distance
+                        let dx = position.x - other_pos.x;
+                        let dy = position.y - other_pos.y;
+                        let distance_squared = dx * dx + dy * dy;
+                        
+                        self.nearby_with_distance_cache.push(NeighborEntry {
+                            index: boid_index,
+                            distance_squared,
+                        });
+                    }
+                }
             }
         }
         
-        result
+        &self.nearby_with_distance_cache
     }
 } 
