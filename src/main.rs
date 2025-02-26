@@ -297,16 +297,19 @@ fn model(app: &App) -> Model {
     let monitor = app.primary_monitor().expect("Failed to get primary monitor");
     let monitor_size = monitor.size();
     
-    // Calculate window size (90% of monitor size)
-    let window_width = (monitor_size.width as f32 * 0.9) as u32;
-    let window_height = (monitor_size.height as f32 * 0.9) as u32;
+    // Calculate window size (use full screen dimensions)
+    let window_width = monitor_size.width;
+    let window_height = monitor_size.height;
     
     // Create the main window
     let window_id = app
         .new_window()
         .title("Boid Flocking Simulation")
         .size(window_width, window_height)
+        .fullscreen()
+        .decorations(false) // Remove window decorations in fullscreen
         .view(view)
+        .key_pressed(key_pressed) // Add key press handler
         .raw_event(raw_window_event)
         .build()
         .unwrap();
@@ -512,8 +515,13 @@ fn view(app: &App, model: &Model, frame: Frame) {
     // Begin drawing
     let draw = app.draw();
     
-    // Clear the background
+    // Clear the background - ensure it covers the entire window
     draw.background().color(BLACK);
+    
+    // Draw a full-screen black rectangle to ensure no gaps
+    draw.rect()
+        .wh(app.window_rect().wh())
+        .color(BLACK);
     
     // Draw each boid
     for boid in &model.boids {
@@ -589,6 +597,16 @@ fn view(app: &App, model: &Model, frame: Frame) {
             .font_size(14);
     }
     
+    // Always show keyboard shortcut info at the bottom right
+    let shortcut_text = "ESC: Exit Fullscreen | F11: Toggle Fullscreen | Ctrl+Q: Quit";
+    let text_x = (model.window_rect.w() / 2.0) - 300.0;
+    let text_y = (-model.window_rect.h() / 2.0) + 20.0;
+    
+    draw.text(shortcut_text)
+        .x_y(text_x, text_y)
+        .color(rgba(1.0, 1.0, 1.0, 0.5)) // Semi-transparent white
+        .font_size(12);
+    
     // Finish drawing
     draw.to_frame(app, &frame).unwrap();
     
@@ -599,4 +617,32 @@ fn view(app: &App, model: &Model, frame: Frame) {
 // Handle raw window events for egui
 fn raw_window_event(_app: &App, model: &mut Model, event: &nannou::winit::event::WindowEvent) {
     model.egui.handle_raw_event(event);
+}
+
+// Handle key presses
+fn key_pressed(app: &App, _model: &mut Model, key: Key) {
+    match key {
+        // Exit fullscreen with Escape key
+        Key::Escape => {
+            if let Some(window) = app.window(app.window_id()) {
+                window.set_fullscreen(false);
+                window.set_decorations(true);
+            }
+        },
+        // Toggle fullscreen with F11
+        Key::F11 => {
+            if let Some(window) = app.window(app.window_id()) {
+                let is_fullscreen = window.is_fullscreen();
+                window.set_fullscreen(!is_fullscreen);
+                window.set_decorations(is_fullscreen);
+            }
+        },
+        // Exit application with Q
+        Key::Q => {
+            if app.keys.mods.logo() || app.keys.mods.ctrl() {
+                std::process::exit(0);
+            }
+        },
+        _ => {},
+    }
 }
