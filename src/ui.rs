@@ -70,6 +70,9 @@ pub fn update_ui(
                 ui.label(format!("Frame time: {:.2} ms", debug_info.frame_time.as_secs_f64() * 1000.0));
                 ui.label(format!("Total Boids: {}", params.num_boids));
                 ui.label(format!("Visible Boids: {}", *debug_info.visible_boids.lock().unwrap()));
+                if params.enable_parallel {
+                    ui.label(format!("Chunk Size: {} boids/thread", debug_info.chunk_size));
+                }
             });
             
             ui.checkbox(&mut params.show_debug, "Show Debug Info");
@@ -96,7 +99,7 @@ pub fn draw_debug_info(
     let margin = 20.0;
     let line_height = 20.0;
     let panel_width = 200.0;
-    let panel_height = line_height * 6.0 + margin;
+    let panel_height = line_height * 7.0 + margin;
     let panel_x = window_rect.left() + panel_width / 2.0;
     let panel_y = window_rect.top() - panel_height / 2.0;
     
@@ -119,6 +122,7 @@ pub fn draw_debug_info(
         format!("Visible Boids: {}", *debug_info.visible_boids.lock().unwrap()),
         format!("Zoom: {:.2}x", camera_zoom),
         format!("World Size: {:.0}x{:.0}", world_size, world_size),
+        format!("Chunk Size: {}", debug_info.chunk_size),
     ];
     
     for (i, text) in debug_texts.iter().enumerate() {
