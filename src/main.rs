@@ -33,6 +33,8 @@ struct Camera {
     drag_start: Option<Vec2>,
     min_zoom: f32,
     max_zoom: f32,
+    is_dragging: bool,  // Add a flag to track if we're actively dragging
+    last_cursor_pos: Vec2, // Store the last cursor position to avoid jumps
 }
 
 impl Camera {
@@ -43,6 +45,8 @@ impl Camera {
             drag_start: None,
             min_zoom: 0.1,
             max_zoom: 5.0,
+            is_dragging: false,
+            last_cursor_pos: Vec2::ZERO,
         }
     }
 
@@ -82,22 +86,30 @@ impl Camera {
 
     // Start dragging the camera
     fn start_drag(&mut self, position: Vec2) {
+        // Only set the drag start position, don't move the camera yet
         self.drag_start = Some(position);
+        self.last_cursor_pos = position;
+        self.is_dragging = true;
     }
 
     // Update camera position while dragging
     fn drag(&mut self, position: Vec2) {
-        if let Some(start) = self.drag_start {
-            // Calculate drag delta and apply it to camera position
-            let delta = position - start;
-            self.position -= delta / self.zoom;
-            self.drag_start = Some(position);
+        if self.is_dragging {
+            // Calculate drag delta from the last position (not the start position)
+            let delta = position - self.last_cursor_pos;
+            
+            // Only apply movement if there's actually a change
+            if delta.length_squared() > 0.0 {
+                self.position -= delta / self.zoom;
+                self.last_cursor_pos = position;
+            }
         }
     }
 
     // End dragging
     fn end_drag(&mut self) {
         self.drag_start = None;
+        self.is_dragging = false;
     }
 }
 
@@ -676,13 +688,24 @@ fn view(app: &App, model: &Model, frame: Frame) {
 
 // Mouse moved event handler
 fn mouse_moved(_app: &App, model: &mut Model, pos: Point2) {
-    model.mouse_position = Vec2::new(pos.x, pos.y);
+    let new_pos = Vec2::new(pos.x, pos.y);
+    
+    // Update camera drag if we're dragging
+    if model.camera.is_dragging {
+        model.camera.drag(new_pos);
+    }
+    
+    // Always update the stored mouse position
+    model.mouse_position = new_pos;
 }
 
 // Mouse pressed event handler
 fn mouse_pressed(_app: &App, model: &mut Model, button: MouseButton) {
     if button == MouseButton::Left {
-        model.camera.start_drag(model.mouse_position);
+        // Check if the click is on the UI before starting camera drag
+        if !model.egui.ctx().is_pointer_over_area() {
+            model.camera.start_drag(model.mouse_position);
+        }
     }
 }
 
@@ -714,11 +737,6 @@ fn raw_window_event(_app: &App, model: &mut Model, event: &nannou::winit::event:
     // Pass events to egui first
     model.egui.handle_raw_event(event);
     
-    // Handle mouse move events for camera dragging
-    if let nannou::winit::event::WindowEvent::CursorMoved { position, .. } = event {
-        if model.camera.drag_start.is_some() {
-            let pos = vec2(position.x as f32, position.y as f32);
-            model.camera.drag(pos);
-        }
-    }
+    // We'll handle cursor movement in the mouse_moved callback instead
+    // This avoids coordinate system mismatches between the two event systems
 }
