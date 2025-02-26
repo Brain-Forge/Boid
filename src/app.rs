@@ -46,6 +46,8 @@ pub struct Model {
     pub last_update_time: Instant,
     pub interpolation_alpha: f32,
     pub last_render_time: Instant,
+    // Frustum culling optimization
+    pub visible_area_cache: Option<Rect>,
 }
 
 // Make Model safe to share across threads
@@ -128,6 +130,8 @@ pub fn model(app: &App) -> Model {
         last_update_time: now,
         interpolation_alpha: 0.0,
         last_render_time: now,
+        // Initialize frustum culling cache
+        visible_area_cache: None,
     }
 }
 
@@ -733,57 +737,40 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
         pt2(visible_area.right() + margin, visible_area.top() + margin)
     );
     
-    // Use cached visible boids if available and simulation is paused
-    let visible_boids_indices = if model.params.pause_simulation {
-        unsafe {
-            if let Some(cached_indices) = &*model.cached_visible_boids.get() {
-                cached_indices.clone()
-            } else {
-                // Filter boids that are in the visible area
-                let indices: Vec<usize> = model.boids.iter()
-                    .enumerate()
-                    .filter(|(_, boid)| {
-                        let pos = Vec2::new(boid.position.x, boid.position.y);
-                        visible_area_with_margin.contains(pos)
-                    })
-                    .map(|(i, _)| i)
-                    .collect();
-                
-                // Cache the indices
-                *model.cached_visible_boids.get() = Some(indices.clone());
-                
-                indices
-            }
-        }
+    // Calculate frustum area ratio for debug info
+    if model.params.show_debug {
+        let world_area = WORLD_SIZE * WORLD_SIZE;
+        let frustum_area = visible_area_with_margin.w() * visible_area_with_margin.h();
+        let area_ratio = frustum_area / world_area;
+        
+        let mut frustum_area_ratio = model.debug_info.frustum_area_ratio.lock().unwrap();
+        *frustum_area_ratio = area_ratio;
+    }
+    
+    // Get visible boids based on culling settings
+    let visible_boids_indices = if model.params.enable_frustum_culling {
+        // Get visible boids using the most efficient method available
+        get_visible_boids(model, visible_area_with_margin)
     } else {
-        // When not paused, always recalculate visible boids
-        // Use interpolated positions for culling if interpolation is enabled
-        if model.params.enable_interpolation {
-            model.boids.iter()
-                .enumerate()
-                .filter(|(_, boid)| {
-                    let interpolated_pos = boid.get_interpolated_position(model.interpolation_alpha);
-                    let pos = Vec2::new(interpolated_pos.x, interpolated_pos.y);
-                    visible_area_with_margin.contains(pos)
-                })
-                .map(|(i, _)| i)
-                .collect()
-        } else {
-            model.boids.iter()
-                .enumerate()
-                .filter(|(_, boid)| {
-                    let pos = Vec2::new(boid.position.x, boid.position.y);
-                    visible_area_with_margin.contains(pos)
-                })
-                .map(|(i, _)| i)
-                .collect()
-        }
+        // If culling is disabled, render all boids
+        (0..model.boids.len()).collect()
     };
     
-    // Track visible boid count for debug info
+    // Track visible boid count and calculate culling efficiency for debug info
     if model.params.show_debug {
+        let visible_count = visible_boids_indices.len();
+        let total_count = model.boids.len();
+        
+        // Update visible boid count
         let mut visible_boids_count = model.debug_info.visible_boids.lock().unwrap();
-        *visible_boids_count = visible_boids_indices.len();
+        *visible_boids_count = visible_count;
+        
+        // Calculate and update culling efficiency
+        if total_count > 0 {
+            let efficiency = (1.0 - (visible_count as f32 / total_count as f32)) * 100.0;
+            let mut culling_efficiency = model.debug_info.culling_efficiency.lock().unwrap();
+            *culling_efficiency = efficiency;
+        }
     }
     
     // Draw each visible boid with interpolation
@@ -793,6 +780,27 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
     
     // Draw debug visualization if enabled
     if model.params.show_debug {
+        // Draw frustum culling visualization if enabled
+        if model.params.enable_frustum_culling {
+            // Convert the visible area with margin to screen space for visualization
+            let top_left = model.camera.world_to_screen(
+                vec2(visible_area_with_margin.left(), visible_area_with_margin.top()), 
+                window_rect
+            );
+            let bottom_right = model.camera.world_to_screen(
+                vec2(visible_area_with_margin.right(), visible_area_with_margin.bottom()), 
+                window_rect
+            );
+            
+            // Draw the frustum culling boundary
+            draw.rect()
+                .xy(pt2((top_left.x + bottom_right.x) / 2.0, (top_left.y + bottom_right.y) / 2.0))
+                .wh(vec2(bottom_right.x - top_left.x, bottom_right.y - top_left.y))
+                .no_fill()
+                .stroke_weight(2.0)
+                .stroke(rgba(1.0, 0.5, 0.0, 0.7)); // Orange for frustum boundary
+        }
+        
         // Draw perception radius for the first boid if it's visible
         if !model.boids.is_empty() {
             let first_boid = &model.boids[0];
@@ -871,6 +879,146 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
     model.egui.draw_to_frame(&frame).unwrap();
 }
 
+// Efficient function to get visible boids using the best available method
+fn get_visible_boids(model: &Model, visible_area: Rect) -> Vec<usize> {
+    // Use cached visible boids if available and simulation is paused
+    if model.params.pause_simulation {
+        unsafe {
+            if let Some(cached_indices) = &*model.cached_visible_boids.get() {
+                return cached_indices.clone();
+            }
+        }
+    }
+    
+    // Choose the most efficient culling method based on available optimizations
+    let indices = if model.params.enable_spatial_grid {
+        // Use spatial grid for efficient culling
+        cull_with_spatial_grid(model, visible_area)
+    } else {
+        // Use brute force culling
+        cull_brute_force(model, visible_area)
+    };
+    
+    // Cache the indices if simulation is paused
+    if model.params.pause_simulation {
+        unsafe {
+            *model.cached_visible_boids.get() = Some(indices.clone());
+        }
+    }
+    
+    indices
+}
+
+// Brute force culling method
+fn cull_brute_force(model: &Model, visible_area: Rect) -> Vec<usize> {
+    let mut visible_indices = Vec::new();
+    
+    // Reset visibility flags for all boids
+    for boid in &model.boids {
+        unsafe {
+            // Use raw pointer to modify the boid without borrowing issues
+            let boid_ptr = boid as *const Boid as *mut Boid;
+            (*boid_ptr).is_visible = false;
+        }
+    }
+    
+    // Check each boid for visibility
+    for (i, boid) in model.boids.iter().enumerate() {
+        let pos = if model.params.enable_interpolation {
+            let interpolated_pos = boid.get_interpolated_position(model.interpolation_alpha);
+            Vec2::new(interpolated_pos.x, interpolated_pos.y)
+        } else {
+            Vec2::new(boid.position.x, boid.position.y)
+        };
+        
+        if visible_area.contains(pos) {
+            visible_indices.push(i);
+            
+            // Mark as visible
+            unsafe {
+                let boid_ptr = boid as *const Boid as *mut Boid;
+                (*boid_ptr).is_visible = true;
+            }
+        }
+    }
+    
+    visible_indices
+}
+
+// Use spatial grid for efficient culling
+fn cull_with_spatial_grid(model: &Model, visible_area: Rect) -> Vec<usize> {
+    // Reset visibility flags for all boids
+    for boid in &model.boids {
+        unsafe {
+            // Use raw pointer to modify the boid without borrowing issues
+            let boid_ptr = boid as *const Boid as *mut Boid;
+            (*boid_ptr).is_visible = false;
+        }
+    }
+    
+    // Convert visible area to grid cells
+    let half_world = WORLD_SIZE / 2.0;
+    let cell_size = model.spatial_grid.cell_size;
+    let grid_size = model.spatial_grid.grid_size;
+    
+    // Calculate grid cell ranges that overlap with the visible area
+    let min_grid_x = ((visible_area.left() + half_world) / cell_size).floor() as isize;
+    let min_grid_y = ((visible_area.bottom() + half_world) / cell_size).floor() as isize;
+    let max_grid_x = ((visible_area.right() + half_world) / cell_size).ceil() as isize;
+    let max_grid_y = ((visible_area.top() + half_world) / cell_size).ceil() as isize;
+    
+    // Clamp to grid boundaries
+    let min_grid_x = min_grid_x.clamp(0, grid_size as isize - 1);
+    let min_grid_y = min_grid_y.clamp(0, grid_size as isize - 1);
+    let max_grid_x = max_grid_x.clamp(0, grid_size as isize - 1);
+    let max_grid_y = max_grid_y.clamp(0, grid_size as isize - 1);
+    
+    // Collect boids from all cells that overlap with the visible area
+    let mut visible_indices = Vec::with_capacity(
+        ((max_grid_x - min_grid_x + 1) * (max_grid_y - min_grid_y + 1) * 10) as usize
+    );
+    
+    for grid_y in min_grid_y..=max_grid_y {
+        let y_index = grid_y as usize * grid_size;
+        
+        for grid_x in min_grid_x..=max_grid_x {
+            let cell_index = y_index + grid_x as usize;
+            
+            // Add all boids in this cell
+            if cell_index < model.spatial_grid.grid.len() {
+                for &boid_index in &model.spatial_grid.grid[cell_index] {
+                    // Skip if already marked as visible
+                    if model.boids[boid_index].is_visible {
+                        continue;
+                    }
+                    
+                    // For cells at the boundary, we need to check if the boid is actually visible
+                    let is_visible = if model.params.enable_interpolation {
+                        let interpolated_pos = model.boids[boid_index].get_interpolated_position(model.interpolation_alpha);
+                        let pos = Vec2::new(interpolated_pos.x, interpolated_pos.y);
+                        visible_area.contains(pos)
+                    } else {
+                        let pos = Vec2::new(model.boids[boid_index].position.x, model.boids[boid_index].position.y);
+                        visible_area.contains(pos)
+                    };
+                    
+                    if is_visible {
+                        visible_indices.push(boid_index);
+                        
+                        // Mark as visible
+                        unsafe {
+                            let boid_ptr = &model.boids[boid_index] as *const Boid as *mut Boid;
+                            (*boid_ptr).is_visible = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    visible_indices
+}
+
 // Mouse moved event handler
 pub fn mouse_moved(_app: &App, model: &mut Model, pos: Point2) {
     let new_pos = Vec2::new(pos.x, pos.y);
@@ -922,6 +1070,8 @@ pub fn mouse_wheel(_app: &App, model: &mut Model, delta: MouseScrollDelta, _phas
     // Clear the cached visible boids and force re-render when zooming
     unsafe { *model.cached_visible_boids.get() = None; }
     unsafe { *model.render_needed.get() = true; }
+    // Also clear the visible area cache
+    model.visible_area_cache = None;
 }
 
 // Handle raw window events for egui and camera dragging

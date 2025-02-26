@@ -12,6 +12,7 @@
  * - Avoiding unnecessary vector instantiations
  * - Using squared distances where possible
  * - Using a spatial grid for efficient neighbor lookups
+ * - Tracking visibility for efficient culling
  * 
  * Supports interpolation between physics updates for smooth rendering at any framerate.
  */
@@ -31,6 +32,7 @@ pub struct Boid {
     pub max_speed: f32,
     pub max_force: f32,
     pub color: Rgb<u8>,
+    pub is_visible: bool,      // Visibility flag for culling optimization
 }
 
 impl Boid {
@@ -60,6 +62,7 @@ impl Boid {
             max_speed: 4.0,
             max_force: 0.1,
             color: rgb(220, 220, 220),
+            is_visible: false, // Initially not visible
         }
     }
     

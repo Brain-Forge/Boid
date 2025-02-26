@@ -24,6 +24,7 @@ pub struct SimulationParams {
     pub enable_spatial_grid: bool,
     pub cell_size_factor: f32,  // Multiplier for cell size relative to perception radius
     pub enable_squared_distance: bool, // Use squared distance calculations to avoid sqrt operations
+    pub enable_frustum_culling: bool, // Enable frustum culling optimization
     // Timing settings
     pub fixed_physics_fps: f32, // Fixed physics update rate (updates per second)
     pub target_render_fps: f32, // Target rendering framerate (0 = unlimited)
@@ -46,6 +47,7 @@ struct ParamSnapshot {
     show_debug: bool,
     pause_simulation: bool,
     enable_squared_distance: bool,
+    enable_frustum_culling: bool,
     fixed_physics_fps: f32,
     target_render_fps: f32,
     enable_interpolation: bool,
@@ -69,6 +71,7 @@ impl Default for SimulationParams {
             enable_spatial_grid: true,
             cell_size_factor: 1.0,
             enable_squared_distance: true, // Enable by default for better performance
+            enable_frustum_culling: true,  // Enable frustum culling by default
             // Default timing settings
             fixed_physics_fps: 60.0, // 60 physics updates per second
             target_render_fps: 0.0,  // Unlimited rendering by default
@@ -94,6 +97,7 @@ impl SimulationParams {
             show_debug: self.show_debug,
             pause_simulation: self.pause_simulation,
             enable_squared_distance: self.enable_squared_distance,
+            enable_frustum_culling: self.enable_frustum_culling,
             fixed_physics_fps: self.fixed_physics_fps,
             target_render_fps: self.target_render_fps,
             enable_interpolation: self.enable_interpolation,
@@ -125,6 +129,7 @@ impl SimulationParams {
                self.show_debug != prev.show_debug ||
                self.pause_simulation != prev.pause_simulation ||
                self.enable_squared_distance != prev.enable_squared_distance ||
+               self.enable_frustum_culling != prev.enable_frustum_culling ||
                self.fixed_physics_fps != prev.fixed_physics_fps ||
                self.target_render_fps != prev.target_render_fps ||
                self.enable_interpolation != prev.enable_interpolation {

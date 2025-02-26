@@ -81,6 +81,7 @@ pub fn update_ui(
                 ui.checkbox(&mut params.enable_parallel, "Enable Parallel Processing");
                 ui.checkbox(&mut params.enable_spatial_grid, "Enable Spatial Grid");
                 ui.checkbox(&mut params.enable_squared_distance, "Use Squared Distance (Avoid sqrt)");
+                ui.checkbox(&mut params.enable_frustum_culling, "Enable Frustum Culling");
                 ui.add(egui::Slider::new(&mut params.cell_size_factor, SimulationParams::get_cell_size_factor_range()).text("Cell Size Factor"));
                 
                 ui.separator();
@@ -91,6 +92,14 @@ pub fn update_ui(
                 if params.enable_parallel {
                     ui.label(format!("Chunk Size: {} boids/thread", debug_info.chunk_size));
                 }
+                
+                // Add culling efficiency metric from debug info
+                let culling_efficiency = *debug_info.culling_efficiency.lock().unwrap();
+                ui.label(format!("Culling Efficiency: {:.1}%", culling_efficiency));
+                
+                // Add frustum area ratio
+                let frustum_area_ratio = *debug_info.frustum_area_ratio.lock().unwrap();
+                ui.label(format!("Frustum/World Ratio: {:.2}%", frustum_area_ratio * 100.0));
             });
             
             ui.checkbox(&mut params.show_debug, "Show Debug Info");
@@ -117,7 +126,7 @@ pub fn draw_debug_info(
     let margin = 20.0;
     let line_height = 20.0;
     let panel_width = 250.0;
-    let panel_height = line_height * 9.0 + margin; // Increased for additional lines
+    let panel_height = line_height * 11.0 + margin; // Increased for additional lines
     let panel_x = window_rect.left() + panel_width / 2.0;
     let panel_y = window_rect.top() - panel_height / 2.0;
     
@@ -132,6 +141,10 @@ pub fn draw_debug_info(
     let text_x = window_rect.left() + margin;
     let text_y = window_rect.top() - margin;
     
+    // Get culling metrics
+    let culling_efficiency = *debug_info.culling_efficiency.lock().unwrap();
+    let frustum_area_ratio = *debug_info.frustum_area_ratio.lock().unwrap();
+    
     // Draw each line of text
     let debug_texts = [
         format!("FPS: {:.1}", debug_info.fps),
@@ -140,6 +153,8 @@ pub fn draw_debug_info(
         format!("Interpolation: {:.3}", debug_info.interpolation_alpha),
         format!("Total Boids: {}", boids_len),
         format!("Visible Boids: {}", *debug_info.visible_boids.lock().unwrap()),
+        format!("Culling Efficiency: {:.1}%", culling_efficiency),
+        format!("Frustum/World Ratio: {:.2}%", frustum_area_ratio * 100.0),
         format!("Zoom: {:.2}x", camera_zoom),
         format!("World Size: {:.0}x{:.0}", world_size, world_size),
         format!("Chunk Size: {}", debug_info.chunk_size),

@@ -9,6 +9,7 @@
  * - Frame time
  * - Number of visible boids
  * - Parallel processing chunk size
+ * - Culling efficiency metrics
  */
 
 use std::time::Duration;
@@ -22,6 +23,8 @@ pub struct DebugInfo {
     pub chunk_size: usize,
     pub physics_updates_per_frame: usize,
     pub interpolation_alpha: f32,
+    pub culling_efficiency: Arc<Mutex<f32>>,
+    pub frustum_area_ratio: Arc<Mutex<f32>>,
 }
 
 impl Default for DebugInfo {
@@ -33,6 +36,8 @@ impl Default for DebugInfo {
             chunk_size: 0,
             physics_updates_per_frame: 0,
             interpolation_alpha: 0.0,
+            culling_efficiency: Arc::new(Mutex::new(0.0)),
+            frustum_area_ratio: Arc::new(Mutex::new(0.0)),
         }
     }
 } 
