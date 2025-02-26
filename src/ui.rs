@@ -27,7 +27,9 @@ pub fn update_ui(
         .default_pos([10.0, 10.0])
         .show(&ctx, |ui| {
             ui.collapsing("Boid Parameters", |ui| {
-                ui.add(egui::Slider::new(&mut params.num_boids, SimulationParams::get_num_boids_range()).text("Number of Boids"));
+                ui.add(egui::Slider::new(&mut params.num_boids, SimulationParams::get_num_boids_range())
+                    .logarithmic(true)
+                    .text("Number of Boids"));
                 
                 if ui.button("Reset Boids").clicked() {
                     should_reset_boids = true;
