@@ -3,6 +3,7 @@
  * 
  * This module contains functions for creating and updating the user interface
  * using nannou_egui. It provides controls for adjusting simulation parameters.
+ * Parameter change detection is now handled by the SimulationParams struct.
  */
 
 use nannou_egui::{egui, Egui};
@@ -16,19 +17,9 @@ pub fn update_ui(
     debug_info: &DebugInfo
 ) -> (bool, bool, bool) {
     let mut should_reset_boids = false;
-    let mut num_boids_changed = false;
-    let mut ui_changed = false;
     
-    let old_num_boids = params.num_boids;
-    let old_show_debug = params.show_debug;
-    let old_pause_simulation = params.pause_simulation;
-    let old_separation_weight = params.separation_weight;
-    let old_alignment_weight = params.alignment_weight;
-    let old_cohesion_weight = params.cohesion_weight;
-    let old_separation_radius = params.separation_radius;
-    let old_alignment_radius = params.alignment_radius;
-    let old_cohesion_radius = params.cohesion_radius;
-    let old_max_speed = params.max_speed;
+    // Take a snapshot of current parameter values for change detection
+    params.take_snapshot();
     
     let ctx = egui.begin_frame();
     
@@ -36,53 +27,22 @@ pub fn update_ui(
         .default_pos([10.0, 10.0])
         .show(&ctx, |ui| {
             ui.collapsing("Boid Parameters", |ui| {
-                ui.add(egui::Slider::new(&mut params.num_boids, 10..=10000).text("Number of Boids"));
-                if params.num_boids != old_num_boids {
-                    num_boids_changed = true;
-                    ui_changed = true;
-                }
+                ui.add(egui::Slider::new(&mut params.num_boids, SimulationParams::get_num_boids_range()).text("Number of Boids"));
                 
                 if ui.button("Reset Boids").clicked() {
                     should_reset_boids = true;
-                    ui_changed = true;
                 }
                 
-                ui.add(egui::Slider::new(&mut params.max_speed, 1.0..=100.0).text("Max Speed"));
-                if params.max_speed != old_max_speed {
-                    ui_changed = true;
-                }
+                ui.add(egui::Slider::new(&mut params.max_speed, SimulationParams::get_max_speed_range()).text("Max Speed"));
             });
             
             ui.collapsing("Flocking Behavior", |ui| {
-                ui.add(egui::Slider::new(&mut params.separation_weight, 0.0..=3.0).text("Separation Weight"));
-                if params.separation_weight != old_separation_weight {
-                    ui_changed = true;
-                }
-                
-                ui.add(egui::Slider::new(&mut params.alignment_weight, 0.0..=3.0).text("Alignment Weight"));
-                if params.alignment_weight != old_alignment_weight {
-                    ui_changed = true;
-                }
-                
-                ui.add(egui::Slider::new(&mut params.cohesion_weight, 0.0..=3.0).text("Cohesion Weight"));
-                if params.cohesion_weight != old_cohesion_weight {
-                    ui_changed = true;
-                }
-                
-                ui.add(egui::Slider::new(&mut params.separation_radius, 10.0..=100.0).text("Separation Radius"));
-                if params.separation_radius != old_separation_radius {
-                    ui_changed = true;
-                }
-                
-                ui.add(egui::Slider::new(&mut params.alignment_radius, 10.0..=100.0).text("Alignment Radius"));
-                if params.alignment_radius != old_alignment_radius {
-                    ui_changed = true;
-                }
-                
-                ui.add(egui::Slider::new(&mut params.cohesion_radius, 10.0..=100.0).text("Cohesion Radius"));
-                if params.cohesion_radius != old_cohesion_radius {
-                    ui_changed = true;
-                }
+                ui.add(egui::Slider::new(&mut params.separation_weight, SimulationParams::get_weight_range()).text("Separation Weight"));
+                ui.add(egui::Slider::new(&mut params.alignment_weight, SimulationParams::get_weight_range()).text("Alignment Weight"));
+                ui.add(egui::Slider::new(&mut params.cohesion_weight, SimulationParams::get_weight_range()).text("Cohesion Weight"));
+                ui.add(egui::Slider::new(&mut params.separation_radius, SimulationParams::get_radius_range()).text("Separation Radius"));
+                ui.add(egui::Slider::new(&mut params.alignment_radius, SimulationParams::get_radius_range()).text("Alignment Radius"));
+                ui.add(egui::Slider::new(&mut params.cohesion_radius, SimulationParams::get_radius_range()).text("Cohesion Radius"));
             });
             
             ui.collapsing("Camera Controls", |ui| {
@@ -98,7 +58,7 @@ pub fn update_ui(
             ui.collapsing("Performance Tuning", |ui| {
                 ui.checkbox(&mut params.enable_parallel, "Enable Parallel Processing");
                 ui.checkbox(&mut params.enable_spatial_grid, "Enable Spatial Grid");
-                ui.add(egui::Slider::new(&mut params.cell_size_factor, 0.5..=2.0).text("Cell Size Factor"));
+                ui.add(egui::Slider::new(&mut params.cell_size_factor, SimulationParams::get_cell_size_factor_range()).text("Cell Size Factor"));
                 
                 ui.separator();
                 
@@ -110,16 +70,13 @@ pub fn update_ui(
             });
             
             ui.checkbox(&mut params.show_debug, "Show Debug Info");
-            if params.show_debug != old_show_debug {
-                ui_changed = true;
-            }
-            
             ui.checkbox(&mut params.pause_simulation, "Pause Simulation");
-            if params.pause_simulation != old_pause_simulation {
-                ui_changed = true;
-            }
         });
     
+    // Detect parameter changes
+    let (_, num_boids_changed, ui_changed) = params.detect_changes();
+    
+    // Return the combined result
     (should_reset_boids, num_boids_changed, ui_changed)
 }
 
