@@ -9,6 +9,7 @@
  * - Modular code organization for better maintainability
  * - Fixed timestep physics with interpolated rendering
  * - Efficient spatial partitioning and frustum culling
+ * - Adaptive cell sizing for optimal spatial grid performance
  */
 
 use nannou::prelude::*;
@@ -33,23 +34,26 @@ pub struct Model {
     pub boids: Vec<Boid>,
     pub params: SimulationParams,
     pub egui: Egui,
-    pub debug_info: DebugInfo,
+    pub debug_info: UnsafeCell<DebugInfo>,
     pub camera: Camera,
     pub mouse_position: Vec2,
     pub spatial_grid: SpatialGrid,
     pub cached_visible_boids: UnsafeCell<Option<Vec<usize>>>,
     pub render_needed: UnsafeCell<bool>,
-    pub last_camera_state: Option<(Vec2, f32)>,
+    pub _last_camera_state: Option<(Vec2, f32)>, // Marked as intentionally unused
     // Fixed timestep physics variables
     pub physics_accumulator: Duration,
     pub physics_step_size: Duration,
     pub last_update_time: Instant,
     pub interpolation_alpha: f32,
-    pub last_render_time: Instant,
+    pub _last_render_time: Instant, // Marked as intentionally unused
     // Frustum culling optimization
     pub visible_area_cache: Option<Rect>,
     // Boid selection and following
     pub selected_boid_index: Option<usize>,
+    // Adaptive cell sizing
+    pub last_cell_size_update: Instant,
+    pub cell_size_update_interval: Duration,
 }
 
 // Make Model safe to share across threads
@@ -92,182 +96,217 @@ pub fn model(app: &App) -> Model {
     let camera = Camera::new();
     
     // Create spatial grid, cell size should be at least as large as the largest perception radius
-    let cell_size = f32::max(params.separation_radius, f32::max(params.alignment_radius, params.cohesion_radius));
+    let max_radius = f32::max(
+        params.separation_radius,
+        f32::max(params.alignment_radius, params.cohesion_radius)
+    );
+    let cell_size = max_radius * params.cell_size_factor;
     let spatial_grid = SpatialGrid::new(cell_size, WORLD_SIZE);
     
     // Create boids
     let mut boids = Vec::with_capacity(params.num_boids);
     let mut rng = rand::thread_rng();
     
-    // Use the world size for boid positioning (much larger than the window)
     for _ in 0..params.num_boids {
         let x = rng.gen_range((-WORLD_SIZE / 2.0)..(WORLD_SIZE / 2.0));
         let y = rng.gen_range((-WORLD_SIZE / 2.0)..(WORLD_SIZE / 2.0));
         boids.push(Boid::new(x, y));
     }
     
-    // Update max speed for all boids
-    for boid in &mut boids {
-        boid.max_speed = params.max_speed;
-    }
-    
-    // Calculate physics step size based on default FPS
+    // Set fixed physics step size based on FPS
     let physics_step_size = Duration::from_secs_f32(1.0 / params.fixed_physics_fps);
-    let now = Instant::now();
     
-    // Return the model
+    // Create the model
     Model {
         boids,
         params,
         egui,
-        debug_info: DebugInfo::default(),
+        debug_info: UnsafeCell::new(DebugInfo::default()),
         camera,
         mouse_position: Vec2::ZERO,
         spatial_grid,
         cached_visible_boids: UnsafeCell::new(None),
         render_needed: UnsafeCell::new(true),
-        last_camera_state: None,
+        _last_camera_state: None,
         physics_accumulator: Duration::ZERO,
         physics_step_size,
-        last_update_time: now,
+        last_update_time: Instant::now(),
         interpolation_alpha: 0.0,
-        last_render_time: now,
+        _last_render_time: Instant::now(),
         visible_area_cache: None,
         selected_boid_index: None,
+        last_cell_size_update: Instant::now(),
+        cell_size_update_interval: Duration::from_secs(1), // Update cell size every second
     }
 }
 
 // Update the model
 pub fn update(app: &App, model: &mut Model, update: Update) {
-    // Update debug info
-    model.debug_info.fps = app.fps();
-    model.debug_info.frame_time = update.since_last;
-    model.debug_info.selected_boid_index = model.selected_boid_index;
-    model.debug_info.follow_mode_active = model.camera.follow_mode;
+    // Update the UI
+    let ui_response = ui::update_ui(app, model, &update);
     
-    // Update UI and check if boids need to be reset
-    let (should_reset_boids, num_boids_changed, ui_changed) = ui::update_ui(&mut model.egui, &mut model.params, &model.debug_info);
+    // Check for parameter changes
+    let (boids_changed, _physics_changed, rendering_changed) = model.params.detect_changes();
     
-    // If UI changed, we need to re-render
-    if ui_changed {
-        unsafe { *model.render_needed.get() = true; }
-        
-        // Update physics step size if FPS changed
+    // Take a snapshot of current parameters for future change detection
+    model.params.take_snapshot();
+    
+    // Reset boids if needed
+    if boids_changed {
+        physics::reset_boids(model);
+    }
+    
+    // Update physics step size if FPS changed
+    if rendering_changed {
         model.physics_step_size = Duration::from_secs_f32(1.0 / model.params.fixed_physics_fps);
     }
     
-    // Handle reset boids
-    if should_reset_boids || num_boids_changed {
-        physics::reset_boids(model);
-        // Clear the caches when boids are reset
-        unsafe { *model.cached_visible_boids.get() = None; }
-        unsafe { *model.render_needed.get() = true; }
-        
-        // Clear selected boid when resetting
-        model.selected_boid_index = None;
-        model.camera.follow_mode = false;
-    }
-    
-    // Get current time
-    let current_time = Instant::now();
-    
-    // Calculate time since last update
-    let frame_time = current_time.duration_since(model.last_update_time);
-    model.last_update_time = current_time;
-    
-    // Add frame time to accumulator
-    model.physics_accumulator += frame_time;
-    
-    // Only update boids if simulation is not paused
+    // Skip physics updates if paused
     if !model.params.pause_simulation {
-        // Track number of physics updates in this frame
-        let mut physics_updates_this_frame = 0;
+        // Calculate time since last update
+        let now = Instant::now();
+        let dt = now.duration_since(model.last_update_time);
+        model.last_update_time = now;
         
-        // Run fixed timestep updates
+        // Add to accumulator
+        model.physics_accumulator += dt;
+        
+        // Store previous state for interpolation
+        for boid in &mut model.boids {
+            boid.store_previous_state();
+        }
+        
+        // Perform fixed timestep updates
         while model.physics_accumulator >= model.physics_step_size {
-            // Store previous state for interpolation
-            for boid in &mut model.boids {
-                boid.store_previous_state();
-            }
-            
-            // Update physics
+            // Update boids
             physics::update_boids(model);
             
             // Subtract step size from accumulator
             model.physics_accumulator -= model.physics_step_size;
-            
-            // Increment counter
-            physics_updates_this_frame += 1;
         }
-        
-        // Update debug info
-        model.debug_info.physics_updates_per_frame = physics_updates_this_frame;
         
         // Calculate interpolation alpha
         if model.params.enable_interpolation {
             model.interpolation_alpha = model.physics_accumulator.as_secs_f32() / model.physics_step_size.as_secs_f32();
-            model.interpolation_alpha = model.interpolation_alpha.clamp(0.0, 1.0);
         } else {
-            model.interpolation_alpha = 1.0; // No interpolation, use current state
+            model.interpolation_alpha = 0.0;
         }
         
-        // Update debug info with interpolation alpha
-        model.debug_info.interpolation_alpha = model.interpolation_alpha;
-        
-        // Clear the caches when simulation is running
-        unsafe { *model.cached_visible_boids.get() = None; }
-        unsafe { *model.render_needed.get() = true; }
-    }
-    
-    // Update camera position if in follow mode
-    if model.camera.follow_mode {
-        if let Some(boid_idx) = model.selected_boid_index {
+        // Update camera position to follow selected boid if in follow mode
+        if model.camera.follow_mode && model.selected_boid_index.is_some() {
+            let boid_idx = model.selected_boid_index.unwrap();
             if boid_idx < model.boids.len() {
-                // Get the boid's interpolated position
-                let boid_pos = model.boids[boid_idx].get_interpolated_position(model.interpolation_alpha);
+                // Get the interpolated position of the boid for smooth camera movement
+                let boid_pos = if model.params.enable_interpolation {
+                    model.boids[boid_idx].get_interpolated_position(model.interpolation_alpha)
+                } else {
+                    model.boids[boid_idx].position
+                };
                 
-                // Smoothly move the camera towards the boid
-                let smoothing = 0.1; // Lower value = smoother/slower camera movement
-                model.camera.position = model.camera.position.lerp(
-                    Vec2::new(boid_pos.x, boid_pos.y), 
-                    smoothing
-                );
+                // Update camera position to match the boid's position
+                model.camera.position = Vec2::new(boid_pos.x, boid_pos.y);
                 
-                // Force re-render when following
+                // Force re-render when following a boid
                 unsafe { *model.render_needed.get() = true; }
-            } else {
-                // Selected boid no longer exists
-                model.selected_boid_index = None;
-                model.camera.follow_mode = false;
+                
+                // Clear the cached visible boids when camera moves
+                unsafe { *model.cached_visible_boids.get() = None; }
+                
+                // Clear the visible area cache
+                model.visible_area_cache = None;
             }
-        } else {
-            // No boid selected, exit follow mode
-            model.camera.follow_mode = false;
         }
-    }
-    
-    // Check if camera has changed
-    let current_camera_state = (model.camera.position, model.camera.zoom);
-    if model.last_camera_state.is_none() || 
-       model.last_camera_state.unwrap().0 != current_camera_state.0 || 
-       model.last_camera_state.unwrap().1 != current_camera_state.1 {
-        // Camera has changed, force a re-render
-        unsafe { *model.render_needed.get() = true; }
-        model.last_camera_state = Some(current_camera_state);
-    }
-    
-    // Handle frame rate limiting for rendering
-    if model.params.target_render_fps > 0.0 {
-        let target_frame_duration = Duration::from_secs_f32(1.0 / model.params.target_render_fps);
-        let time_since_last_render = current_time.duration_since(model.last_render_time);
         
-        if time_since_last_render < target_frame_duration {
-            // Not time to render yet
-            unsafe { *model.render_needed.get() = false; }
-        } else {
-            // Time to render
-            model.last_render_time = current_time;
-            unsafe { *model.render_needed.get() = true; }
+        // Update adaptive cell size if enabled
+        if model.params.adaptive_cell_sizing && 
+           now.duration_since(model.last_cell_size_update) >= model.cell_size_update_interval {
+            update_adaptive_cell_size(model);
+            model.last_cell_size_update = now;
         }
+    }
+    
+    // Update debug info
+    if model.params.show_debug {
+        model.debug_info.get_mut().update_from_app(app);
+        
+        // Get the cached visible boids
+        let cached_visible_boids = unsafe { &*model.cached_visible_boids.get() };
+        
+        model.debug_info.get_mut().update_from_model(
+            model.selected_boid_index,
+            model.camera.follow_mode,
+            model.interpolation_alpha,
+            cached_visible_boids,
+            model.boids.len(),
+            model.visible_area_cache,
+            WORLD_SIZE
+        );
+    }
+    
+    // Mark that a render is needed
+    unsafe {
+        *model.render_needed.get() = true;
+    }
+}
+
+// Update the spatial grid cell size based on boid density
+fn update_adaptive_cell_size(model: &mut Model) {
+    // Calculate the maximum perception radius
+    let max_radius = f32::max(
+        model.params.separation_radius,
+        f32::max(model.params.alignment_radius, model.params.cohesion_radius)
+    );
+    
+    // Calculate average number of neighbors per boid
+    let mut total_neighbors = 0;
+    let sample_size = model.boids.len().min(100); // Sample at most 100 boids for efficiency
+    
+    if sample_size == 0 {
+        return; // No boids to sample
+    }
+    
+    let step = model.boids.len() / sample_size;
+    
+    // Extract positions for the spatial grid's calculations
+    let boid_positions: Vec<Point2> = model.boids.iter().map(|boid| boid.position).collect();
+    
+    for i in (0..model.boids.len()).step_by(step.max(1)) {
+        if i >= model.boids.len() {
+            break;
+        }
+        
+        let nearby = model.spatial_grid.get_nearby_with_distances(
+            model.boids[i].position,
+            &boid_positions,
+            WORLD_SIZE
+        );
+        
+        total_neighbors += nearby.len();
+    }
+    
+    let avg_neighbors = total_neighbors as f32 / sample_size as f32;
+    
+    // Adjust cell size based on average neighbors
+    // Target: around 10-20 neighbors per cell for optimal performance
+    let target_neighbors = 15.0;
+    let current_cell_size = model.spatial_grid.cell_size;
+    
+    let mut new_cell_size = if avg_neighbors > target_neighbors * 1.5 {
+        // Too many neighbors, decrease cell size
+        current_cell_size * 0.9
+    } else if avg_neighbors < target_neighbors * 0.5 {
+        // Too few neighbors, increase cell size
+        current_cell_size * 1.1
+    } else {
+        // Good range, keep current size
+        current_cell_size
+    };
+    
+    // Ensure cell size is at least the maximum perception radius
+    new_cell_size = f32::max(new_cell_size, max_radius * model.params.cell_size_factor);
+    
+    // Only recreate grid if cell size changed significantly
+    if (new_cell_size - current_cell_size).abs() > current_cell_size * 0.1 {
+        model.spatial_grid = SpatialGrid::new(new_cell_size, WORLD_SIZE);
     }
 } 
