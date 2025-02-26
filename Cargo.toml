@@ -1,0 +1,11 @@
+[package]
+name = "boids"
+version = "0.1.0"
+edition = "2021"
+authors = ["Boid Simulation Author"]
+description = "A boid flocking simulation with interactive parameters"
+
+[dependencies]
+nannou = "0.18.1"         # Creative coding framework for graphics
+nannou_egui = "0.5.0"     # Integration of egui with nannou for UI
+rand = "0.8.5"            # Random number generation
