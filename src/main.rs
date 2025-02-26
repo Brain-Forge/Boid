@@ -8,8 +8,6 @@
  * 
  * The simulation includes interactive sliders to adjust parameters in real-time
  * and displays debug information about the current state.
- * 
- * Optimized for Apple Silicon (M1/M2) with memory efficiency and adaptive screen sizing.
  */
 
 use nannou::prelude::*;
@@ -17,10 +15,8 @@ use nannou_egui::{self, egui, Egui};
 use rand::Rng;
 use std::time::Duration;
 
-// Constants
+// Only keep the boid size as a constant
 const BOID_SIZE: f32 = 6.0;
-const DEFAULT_NUM_BOIDS: usize = 120; // Reduced default for better performance
-const MAX_NUM_BOIDS: usize = 300;     // Capped maximum for memory efficiency
 
 // Boid struct representing an individual agent in the simulation
 #[derive(Clone)]
@@ -237,13 +233,12 @@ struct SimulationParams {
     max_speed: f32,
     show_debug: bool,
     pause_simulation: bool,
-    spatial_optimization: bool,
 }
 
 impl Default for SimulationParams {
     fn default() -> Self {
         Self {
-            num_boids: DEFAULT_NUM_BOIDS,
+            num_boids: 150,
             separation_weight: 1.5,
             alignment_weight: 1.0,
             cohesion_weight: 1.0,
@@ -253,7 +248,6 @@ impl Default for SimulationParams {
             max_speed: 4.0,
             show_debug: false,
             pause_simulation: false,
-            spatial_optimization: true,
         }
     }
 }
@@ -262,8 +256,6 @@ impl Default for SimulationParams {
 struct DebugInfo {
     fps: f32,
     frame_time: Duration,
-    screen_width: f32,
-    screen_height: f32,
 }
 
 impl Default for DebugInfo {
@@ -271,8 +263,6 @@ impl Default for DebugInfo {
         Self {
             fps: 0.0,
             frame_time: Duration::from_secs(0),
-            screen_width: 0.0,
-            screen_height: 0.0,
         }
     }
 }
@@ -283,7 +273,9 @@ struct Model {
     params: SimulationParams,
     egui: Egui,
     debug_info: DebugInfo,
-    window_rect: Rect,
+    // Add window dimensions to the model
+    window_width: f32,
+    window_height: f32,
 }
 
 fn main() {
@@ -297,26 +289,22 @@ fn model(app: &App) -> Model {
     let monitor = app.primary_monitor().expect("Failed to get primary monitor");
     let monitor_size = monitor.size();
     
-    // Calculate window size (use full screen dimensions)
-    let window_width = monitor_size.width;
-    let window_height = monitor_size.height;
+    // Calculate window size based on monitor size (80% of monitor size)
+    let window_width = monitor_size.width as f32 * 0.8;
+    let window_height = monitor_size.height as f32 * 0.8;
     
-    // Create the main window
+    // Create the main window with dynamic size
     let window_id = app
         .new_window()
         .title("Boid Flocking Simulation")
-        .size(window_width, window_height)
-        .fullscreen()
-        .decorations(false) // Remove window decorations in fullscreen
+        .size(window_width as u32, window_height as u32)
         .view(view)
-        .key_pressed(key_pressed) // Add key press handler
         .raw_event(raw_window_event)
         .build()
         .unwrap();
     
     // Get the window
     let window = app.window(window_id).unwrap();
-    let window_rect = app.window_rect();
     
     // Create the UI
     let egui = Egui::from_window(&window);
@@ -328,12 +316,10 @@ fn model(app: &App) -> Model {
     let mut boids = Vec::with_capacity(params.num_boids);
     let mut rng = rand::thread_rng();
     
-    let half_width = window_rect.w() / 2.0;
-    let half_height = window_rect.h() / 2.0;
-    
+    // Use the window dimensions for boid positioning
     for _ in 0..params.num_boids {
-        let x = rng.gen_range(-half_width..half_width);
-        let y = rng.gen_range(-half_height..half_height);
+        let x = rng.gen_range((-window_width / 2.0)..(window_width / 2.0));
+        let y = rng.gen_range((-window_height / 2.0)..(window_height / 2.0));
         boids.push(Boid::new(x, y));
     }
     
@@ -342,29 +328,20 @@ fn model(app: &App) -> Model {
         boid.max_speed = params.max_speed;
     }
     
-    // Create debug info
-    let mut debug_info = DebugInfo::default();
-    debug_info.screen_width = window_rect.w();
-    debug_info.screen_height = window_rect.h();
-    
     Model {
         boids,
         params,
         egui,
-        debug_info,
-        window_rect,
+        debug_info: DebugInfo::default(),
+        window_width,
+        window_height,
     }
 }
 
 fn update(app: &App, model: &mut Model, update: Update) {
-    // Update window rect in case of resize
-    model.window_rect = app.window_rect();
-    
     // Update debug info
     model.debug_info.fps = app.fps();
     model.debug_info.frame_time = update.since_last;
-    model.debug_info.screen_width = model.window_rect.w();
-    model.debug_info.screen_height = model.window_rect.h();
     
     // Track if we need to reset boids
     let mut should_reset_boids = false;
@@ -379,7 +356,7 @@ fn update(app: &App, model: &mut Model, update: Update) {
             .default_pos([10.0, 10.0])
             .show(&ctx, |ui| {
                 ui.collapsing("Boid Parameters", |ui| {
-                    ui.add(egui::Slider::new(&mut model.params.num_boids, 10..=MAX_NUM_BOIDS).text("Number of Boids"));
+                    ui.add(egui::Slider::new(&mut model.params.num_boids, 10..=500).text("Number of Boids"));
                     if model.params.num_boids != old_num_boids {
                         num_boids_changed = true;
                     }
@@ -394,9 +371,6 @@ fn update(app: &App, model: &mut Model, update: Update) {
                     for boid in &mut model.boids {
                         boid.max_speed = model.params.max_speed;
                     }
-                    
-                    ui.checkbox(&mut model.params.spatial_optimization, "Spatial Optimization");
-                    ui.label("Enables spatial partitioning for better performance with many boids");
                 });
                 
                 ui.collapsing("Flocking Behavior", |ui| {
@@ -418,13 +392,11 @@ fn update(app: &App, model: &mut Model, update: Update) {
     if should_reset_boids || num_boids_changed {
         let mut rng = rand::thread_rng();
         
-        let half_width = model.window_rect.w() / 2.0;
-        let half_height = model.window_rect.h() / 2.0;
-        
         // Resize the boids vector if needed
         model.boids.resize_with(model.params.num_boids, || {
-            let x = rng.gen_range(-half_width..half_width);
-            let y = rng.gen_range(-half_height..half_height);
+            // Use the window dimensions for boid positioning
+            let x = rng.gen_range((-model.window_width / 2.0)..(model.window_width / 2.0));
+            let y = rng.gen_range((-model.window_height / 2.0)..(model.window_height / 2.0));
             Boid::new(x, y)
         });
         
@@ -436,77 +408,14 @@ fn update(app: &App, model: &mut Model, update: Update) {
     
     // Only update boids if simulation is not paused
     if !model.params.pause_simulation {
-        // Optimization for M1: Use spatial partitioning for large numbers of boids
-        if model.params.spatial_optimization && model.boids.len() > 50 {
-            // Simple spatial partitioning - divide the screen into a grid
-            let grid_size = model.params.cohesion_radius.max(model.params.alignment_radius).max(model.params.separation_radius);
-            let width = model.window_rect.w();
-            let height = model.window_rect.h();
-            
-            let cols = (width / grid_size).ceil() as usize;
-            let rows = (height / grid_size).ceil() as usize;
-            
-            // Create a grid of boid indices
-            let mut grid = vec![Vec::new(); cols * rows];
-            
-            // Assign boids to grid cells
-            for (i, boid) in model.boids.iter().enumerate() {
-                let col = ((boid.position.x + width / 2.0) / grid_size).floor() as usize;
-                let row = ((boid.position.y + height / 2.0) / grid_size).floor() as usize;
-                
-                let col = col.min(cols - 1);
-                let row = row.min(rows - 1);
-                
-                let cell_index = row * cols + col;
-                if cell_index < grid.len() {
-                    grid[cell_index].push(i);
-                }
-            }
-            
-            // Clone boids for reading while updating
-            let boids_clone = model.boids.clone();
-            
-            // Update each boid using only nearby boids
-            for (_i, boid) in model.boids.iter_mut().enumerate() {
-                let col = ((boid.position.x + width / 2.0) / grid_size).floor() as usize;
-                let row = ((boid.position.y + height / 2.0) / grid_size).floor() as usize;
-                
-                let col = col.min(cols - 1);
-                let row = row.min(rows - 1);
-                
-                // Get nearby boids from surrounding cells
-                let mut nearby_boids = Vec::new();
-                
-                for dy in -1..=1 {
-                    for dx in -1..=1 {
-                        let neighbor_col = col as isize + dx;
-                        let neighbor_row = row as isize + dy;
-                        
-                        if neighbor_col >= 0 && neighbor_col < cols as isize && 
-                           neighbor_row >= 0 && neighbor_row < rows as isize {
-                            let cell_index = (neighbor_row as usize) * cols + (neighbor_col as usize);
-                            
-                            for &boid_index in &grid[cell_index] {
-                                nearby_boids.push(boids_clone[boid_index].clone());
-                            }
-                        }
-                    }
-                }
-                
-                // Apply flocking behavior with only nearby boids
-                boid.flock(&nearby_boids, &model.params);
-                boid.update();
-                boid.wrap_edges(width, height);
-            }
-        } else {
-            // Standard update for small numbers of boids
-            let boids_clone = model.boids.clone();
-            
-            for boid in &mut model.boids {
-                boid.flock(&boids_clone, &model.params);
-                boid.update();
-                boid.wrap_edges(model.window_rect.w(), model.window_rect.h());
-            }
+        // Update each boid
+        let boids_clone = model.boids.clone(); // Clone to avoid borrow checker issues
+        
+        for boid in &mut model.boids {
+            boid.flock(&boids_clone, &model.params);
+            boid.update();
+            // Use the window dimensions for wrapping
+            boid.wrap_edges(model.window_width, model.window_height);
         }
     }
 }
@@ -515,13 +424,8 @@ fn view(app: &App, model: &Model, frame: Frame) {
     // Begin drawing
     let draw = app.draw();
     
-    // Clear the background - ensure it covers the entire window
+    // Clear the background
     draw.background().color(BLACK);
-    
-    // Draw a full-screen black rectangle to ensure no gaps
-    draw.rect()
-        .wh(app.window_rect().wh())
-        .color(BLACK);
     
     // Draw each boid
     for boid in &model.boids {
@@ -567,53 +471,27 @@ fn view(app: &App, model: &Model, frame: Frame) {
         }
         
         // Draw FPS and other debug info
-        let text_x = (-model.window_rect.w() / 2.0) + 100.0;
-        let text_y_start = (model.window_rect.h() / 2.0) - 20.0;
-        let line_height = 20.0;
-        
         draw.text(&format!("FPS: {:.1}", model.debug_info.fps))
-            .x_y(text_x, text_y_start)
+            .x_y((-model.window_width / 2.0) + 100.0, (model.window_height / 2.0) - 20.0)
             .color(WHITE)
             .font_size(14);
         
         draw.text(&format!("Frame time: {:.2} ms", model.debug_info.frame_time.as_secs_f64() * 1000.0))
-            .x_y(text_x, text_y_start - line_height)
+            .x_y((-model.window_width / 2.0) + 100.0, (model.window_height / 2.0) - 40.0)
             .color(WHITE)
             .font_size(14);
         
         draw.text(&format!("Boids: {}", model.boids.len()))
-            .x_y(text_x, text_y_start - line_height * 2.0)
+            .x_y((-model.window_width / 2.0) + 100.0, (model.window_height / 2.0) - 60.0)
             .color(WHITE)
             .font_size(14);
-        
-        draw.text(&format!("Screen: {:.0}x{:.0}", model.debug_info.screen_width, model.debug_info.screen_height))
-            .x_y(text_x, text_y_start - line_height * 3.0)
-            .color(WHITE)
-            .font_size(14);
-        
-        draw.text(&format!("Optimization: {}", if model.params.spatial_optimization { "On" } else { "Off" }))
-            .x_y(text_x, text_y_start - line_height * 4.0)
+            
+        // Add window size to debug info
+        draw.text(&format!("Window: {:.0}x{:.0}", model.window_width, model.window_height))
+            .x_y((-model.window_width / 2.0) + 100.0, (model.window_height / 2.0) - 80.0)
             .color(WHITE)
             .font_size(14);
     }
-    
-    // Always show keyboard shortcut info at the bottom right
-    let shortcut_text = "ESC: Exit Fullscreen | F11: Toggle Fullscreen | Ctrl+Q: Quit";
-    let text_x = (model.window_rect.w() / 2.0) - 300.0;
-    let text_y = (-model.window_rect.h() / 2.0) + 30.0;
-    
-    // Draw a black background behind the text to ensure no white bar
-    let text_width = 600.0; // Approximate width of the text
-    let text_height = 20.0; // Approximate height of the text
-    draw.rect()
-        .x_y(text_x, text_y)
-        .w_h(text_width, text_height)
-        .color(BLACK);
-    
-    draw.text(shortcut_text)
-        .x_y(text_x, text_y)
-        .color(rgba(1.0, 1.0, 1.0, 0.5)) // Semi-transparent white
-        .font_size(12);
     
     // Finish drawing
     draw.to_frame(app, &frame).unwrap();
@@ -625,32 +503,4 @@ fn view(app: &App, model: &Model, frame: Frame) {
 // Handle raw window events for egui
 fn raw_window_event(_app: &App, model: &mut Model, event: &nannou::winit::event::WindowEvent) {
     model.egui.handle_raw_event(event);
-}
-
-// Handle key presses
-fn key_pressed(app: &App, _model: &mut Model, key: Key) {
-    match key {
-        // Exit fullscreen with Escape key
-        Key::Escape => {
-            if let Some(window) = app.window(app.window_id()) {
-                window.set_fullscreen(false);
-                window.set_decorations(true);
-            }
-        },
-        // Toggle fullscreen with F11
-        Key::F11 => {
-            if let Some(window) = app.window(app.window_id()) {
-                let is_fullscreen = window.is_fullscreen();
-                window.set_fullscreen(!is_fullscreen);
-                window.set_decorations(is_fullscreen);
-            }
-        },
-        // Exit application with Q
-        Key::Q => {
-            if app.keys.mods.logo() || app.keys.mods.ctrl() {
-                std::process::exit(0);
-            }
-        },
-        _ => {},
-    }
 }
