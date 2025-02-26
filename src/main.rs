@@ -8,6 +8,11 @@
  * 
  * The simulation includes interactive sliders to adjust parameters in real-time
  * and displays debug information about the current state.
+ * 
+ * Features:
+ * - Dynamic window sizing based on user's screen
+ * - Camera controls for zooming and panning
+ * - Large simulation space that extends beyond the visible area
  */
 
 use nannou::prelude::*;
@@ -17,6 +22,84 @@ use std::time::Duration;
 
 // Only keep the boid size as a constant
 const BOID_SIZE: f32 = 6.0;
+
+// Define the simulation world size (much larger than the visible area)
+const WORLD_SIZE: f32 = 5000.0;
+
+// Camera struct to handle zooming and panning
+struct Camera {
+    position: Vec2,
+    zoom: f32,
+    drag_start: Option<Vec2>,
+    min_zoom: f32,
+    max_zoom: f32,
+}
+
+impl Camera {
+    fn new() -> Self {
+        Self {
+            position: Vec2::ZERO,
+            zoom: 1.0,
+            drag_start: None,
+            min_zoom: 0.1,
+            max_zoom: 5.0,
+        }
+    }
+
+    // Convert a point from world space to screen space
+    fn world_to_screen(&self, point: Vec2, window_rect: Rect) -> Vec2 {
+        // Apply zoom and translation
+        let zoomed = (point - self.position) * self.zoom;
+        // Convert to screen coordinates
+        zoomed + window_rect.xy()
+    }
+
+    // Convert a point from screen space to world space
+    fn screen_to_world(&self, point: Vec2, window_rect: Rect) -> Vec2 {
+        // Convert from screen coordinates
+        let centered = point - window_rect.xy();
+        // Apply inverse zoom and translation
+        centered / self.zoom + self.position
+    }
+
+    // Handle mouse wheel events for zooming
+    fn zoom(&mut self, scroll_delta: Vec2, cursor_position: Vec2, window_rect: Rect) {
+        // Calculate zoom factor based on scroll amount
+        let zoom_factor = 1.0 + scroll_delta.y * 0.1;
+        
+        // Calculate cursor position in world space before zoom
+        let cursor_world_before = self.screen_to_world(cursor_position, window_rect);
+        
+        // Apply zoom, clamping to min/max values
+        self.zoom = (self.zoom * zoom_factor).clamp(self.min_zoom, self.max_zoom);
+        
+        // Calculate cursor position in world space after zoom
+        let cursor_world_after = self.screen_to_world(cursor_position, window_rect);
+        
+        // Adjust camera position to keep cursor over the same world point
+        self.position += cursor_world_before - cursor_world_after;
+    }
+
+    // Start dragging the camera
+    fn start_drag(&mut self, position: Vec2) {
+        self.drag_start = Some(position);
+    }
+
+    // Update camera position while dragging
+    fn drag(&mut self, position: Vec2) {
+        if let Some(start) = self.drag_start {
+            // Calculate drag delta and apply it to camera position
+            let delta = position - start;
+            self.position -= delta / self.zoom;
+            self.drag_start = Some(position);
+        }
+    }
+
+    // End dragging
+    fn end_drag(&mut self) {
+        self.drag_start = None;
+    }
+}
 
 // Boid struct representing an individual agent in the simulation
 #[derive(Clone)]
@@ -70,21 +153,20 @@ impl Boid {
         self.acceleration = Vec2::ZERO;
     }
     
-    // Wrap the boid around the screen edges
-    fn wrap_edges(&mut self, width: f32, height: f32) {
-        let half_width = width / 2.0;
-        let half_height = height / 2.0;
+    // Wrap the boid around the world edges
+    fn wrap_edges(&mut self, world_size: f32) {
+        let half_size = world_size / 2.0;
         
-        if self.position.x > half_width {
-            self.position.x = -half_width;
-        } else if self.position.x < -half_width {
-            self.position.x = half_width;
+        if self.position.x > half_size {
+            self.position.x = -half_size;
+        } else if self.position.x < -half_size {
+            self.position.x = half_size;
         }
         
-        if self.position.y > half_height {
-            self.position.y = -half_height;
-        } else if self.position.y < -half_height {
-            self.position.y = half_height;
+        if self.position.y > half_size {
+            self.position.y = -half_size;
+        } else if self.position.y < -half_size {
+            self.position.y = half_size;
         }
     }
     
@@ -202,22 +284,40 @@ impl Boid {
     }
     
     // Draw the boid
-    fn draw(&self, draw: &Draw) {
+    fn draw(&self, draw: &Draw, camera: &Camera, window_rect: Rect) {
+        // Convert boid position from world space to screen space
+        let screen_pos = camera.world_to_screen(Vec2::new(self.position.x, self.position.y), window_rect);
+        
         // Calculate the angle of the velocity
         let angle = self.velocity.y.atan2(self.velocity.x);
         
+        // Scale the boid size based on zoom level
+        let scaled_size = BOID_SIZE * camera.zoom;
+        
         // Create a triangle shape for the boid
         let points = [
-            pt2(BOID_SIZE, 0.0),
-            pt2(-BOID_SIZE, BOID_SIZE / 2.0),
-            pt2(-BOID_SIZE, -BOID_SIZE / 2.0),
+            pt2(scaled_size, 0.0),
+            pt2(-scaled_size, scaled_size / 2.0),
+            pt2(-scaled_size, -scaled_size / 2.0),
         ];
         
         draw.polygon()
             .color(self.color)
             .points(points)
-            .xy(self.position)
+            .xy(pt2(screen_pos.x, screen_pos.y))
             .rotate(angle);
+    }
+    
+    // Check if the boid is visible in the current view
+    fn is_visible(&self, camera: &Camera, window_rect: Rect) -> bool {
+        let screen_pos = camera.world_to_screen(Vec2::new(self.position.x, self.position.y), window_rect);
+        let scaled_size = BOID_SIZE * camera.zoom * 2.0; // Add some margin
+        
+        // Check if the boid is within the visible area
+        screen_pos.x + scaled_size >= window_rect.left() &&
+        screen_pos.x - scaled_size <= window_rect.right() &&
+        screen_pos.y + scaled_size >= window_rect.bottom() &&
+        screen_pos.y - scaled_size <= window_rect.top()
     }
 }
 
@@ -238,7 +338,7 @@ struct SimulationParams {
 impl Default for SimulationParams {
     fn default() -> Self {
         Self {
-            num_boids: 150,
+            num_boids: 500, // Increased default number of boids for the larger world
             separation_weight: 1.5,
             alignment_weight: 1.0,
             cohesion_weight: 1.0,
@@ -256,6 +356,7 @@ impl Default for SimulationParams {
 struct DebugInfo {
     fps: f32,
     frame_time: Duration,
+    visible_boids: usize,
 }
 
 impl Default for DebugInfo {
@@ -263,6 +364,7 @@ impl Default for DebugInfo {
         Self {
             fps: 0.0,
             frame_time: Duration::from_secs(0),
+            visible_boids: 0,
         }
     }
 }
@@ -273,9 +375,8 @@ struct Model {
     params: SimulationParams,
     egui: Egui,
     debug_info: DebugInfo,
-    // Add window dimensions to the model
-    window_width: f32,
-    window_height: f32,
+    camera: Camera,
+    mouse_position: Vec2,
 }
 
 fn main() {
@@ -299,6 +400,10 @@ fn model(app: &App) -> Model {
         .title("Boid Flocking Simulation")
         .size(window_width as u32, window_height as u32)
         .view(view)
+        .mouse_moved(mouse_moved)
+        .mouse_pressed(mouse_pressed)
+        .mouse_released(mouse_released)
+        .mouse_wheel(mouse_wheel)
         .raw_event(raw_window_event)
         .build()
         .unwrap();
@@ -312,14 +417,17 @@ fn model(app: &App) -> Model {
     // Create simulation parameters
     let params = SimulationParams::default();
     
+    // Create camera
+    let camera = Camera::new();
+    
     // Create boids
     let mut boids = Vec::with_capacity(params.num_boids);
     let mut rng = rand::thread_rng();
     
-    // Use the window dimensions for boid positioning
+    // Use the world size for boid positioning (much larger than the window)
     for _ in 0..params.num_boids {
-        let x = rng.gen_range((-window_width / 2.0)..(window_width / 2.0));
-        let y = rng.gen_range((-window_height / 2.0)..(window_height / 2.0));
+        let x = rng.gen_range((-WORLD_SIZE / 2.0)..(WORLD_SIZE / 2.0));
+        let y = rng.gen_range((-WORLD_SIZE / 2.0)..(WORLD_SIZE / 2.0));
         boids.push(Boid::new(x, y));
     }
     
@@ -333,8 +441,8 @@ fn model(app: &App) -> Model {
         params,
         egui,
         debug_info: DebugInfo::default(),
-        window_width,
-        window_height,
+        camera,
+        mouse_position: Vec2::ZERO,
     }
 }
 
@@ -356,7 +464,7 @@ fn update(app: &App, model: &mut Model, update: Update) {
             .default_pos([10.0, 10.0])
             .show(&ctx, |ui| {
                 ui.collapsing("Boid Parameters", |ui| {
-                    ui.add(egui::Slider::new(&mut model.params.num_boids, 10..=500).text("Number of Boids"));
+                    ui.add(egui::Slider::new(&mut model.params.num_boids, 10..=2000).text("Number of Boids"));
                     if model.params.num_boids != old_num_boids {
                         num_boids_changed = true;
                     }
@@ -383,6 +491,17 @@ fn update(app: &App, model: &mut Model, update: Update) {
                     ui.add(egui::Slider::new(&mut model.params.cohesion_radius, 10.0..=100.0).text("Cohesion Radius"));
                 });
                 
+                ui.collapsing("Camera Controls", |ui| {
+                    ui.label("Zoom: Use mouse wheel or trackpad pinch gesture");
+                    ui.label("Pan: Click and drag or use trackpad with two fingers");
+                    if ui.button("Reset Camera").clicked() {
+                        model.camera.position = Vec2::ZERO;
+                        model.camera.zoom = 1.0;
+                    }
+                    ui.label(format!("Zoom Level: {:.2}x", model.camera.zoom));
+                    ui.label(format!("Camera Position: ({:.0}, {:.0})", model.camera.position.x, model.camera.position.y));
+                });
+                
                 ui.checkbox(&mut model.params.show_debug, "Show Debug Info");
                 ui.checkbox(&mut model.params.pause_simulation, "Pause Simulation");
             });
@@ -394,9 +513,9 @@ fn update(app: &App, model: &mut Model, update: Update) {
         
         // Resize the boids vector if needed
         model.boids.resize_with(model.params.num_boids, || {
-            // Use the window dimensions for boid positioning
-            let x = rng.gen_range((-model.window_width / 2.0)..(model.window_width / 2.0));
-            let y = rng.gen_range((-model.window_height / 2.0)..(model.window_height / 2.0));
+            // Use the world size for boid positioning
+            let x = rng.gen_range((-WORLD_SIZE / 2.0)..(WORLD_SIZE / 2.0));
+            let y = rng.gen_range((-WORLD_SIZE / 2.0)..(WORLD_SIZE / 2.0));
             Boid::new(x, y)
         });
         
@@ -414,9 +533,18 @@ fn update(app: &App, model: &mut Model, update: Update) {
         for boid in &mut model.boids {
             boid.flock(&boids_clone, &model.params);
             boid.update();
-            // Use the window dimensions for wrapping
-            boid.wrap_edges(model.window_width, model.window_height);
+            // Use the world size for wrapping
+            boid.wrap_edges(WORLD_SIZE);
         }
+    }
+    
+    // Count visible boids for debug info
+    if model.params.show_debug {
+        let window_rect = app.window_rect();
+        model.debug_info.visible_boids = model.boids
+            .iter()
+            .filter(|boid| boid.is_visible(&model.camera, window_rect))
+            .count();
     }
 }
 
@@ -427,68 +555,114 @@ fn view(app: &App, model: &Model, frame: Frame) {
     // Clear the background
     draw.background().color(BLACK);
     
-    // Draw each boid
+    // Get the window rectangle
+    let window_rect = app.window_rect();
+    
+    // Draw world boundary to show the simulation limits
+    let world_top_left = model.camera.world_to_screen(vec2(-WORLD_SIZE/2.0, -WORLD_SIZE/2.0), window_rect);
+    let world_bottom_right = model.camera.world_to_screen(vec2(WORLD_SIZE/2.0, WORLD_SIZE/2.0), window_rect);
+    
+    let world_rect = Rect::from_corners(
+        pt2(world_top_left.x, world_top_left.y),
+        pt2(world_bottom_right.x, world_bottom_right.y)
+    );
+    
+    draw.rect()
+        .xy(world_rect.xy())
+        .wh(world_rect.wh())
+        .no_fill()
+        .stroke_weight(1.0)
+        .stroke(rgba(0.3, 0.3, 0.3, 1.0));
+    
+    // Draw each boid (only if visible in the current view)
     for boid in &model.boids {
-        boid.draw(&draw);
+        if boid.is_visible(&model.camera, window_rect) {
+            boid.draw(&draw, &model.camera, window_rect);
+        }
     }
     
     // Draw debug visualization if enabled
     if model.params.show_debug {
-        // Draw perception radius for the first boid
+        // Draw perception radius for the first boid if it's visible
         if !model.boids.is_empty() {
             let first_boid = &model.boids[0];
             
-            // Separation radius
-            draw.ellipse()
-                .xy(first_boid.position)
-                .radius(model.params.separation_radius)
-                .no_fill()
-                .stroke(RED)
-                .stroke_weight(1.0);
-            
-            // Alignment radius
-            draw.ellipse()
-                .xy(first_boid.position)
-                .radius(model.params.alignment_radius)
-                .no_fill()
-                .stroke(GREEN)
-                .stroke_weight(1.0);
-            
-            // Cohesion radius
-            draw.ellipse()
-                .xy(first_boid.position)
-                .radius(model.params.cohesion_radius)
-                .no_fill()
-                .stroke(BLUE)
-                .stroke_weight(1.0);
-            
-            // Velocity vector
-            draw.arrow()
-                .start(first_boid.position)
-                .end(first_boid.position + first_boid.velocity * 5.0)
-                .color(YELLOW)
-                .stroke_weight(2.0);
+            if first_boid.is_visible(&model.camera, window_rect) {
+                let screen_pos = model.camera.world_to_screen(Vec2::new(first_boid.position.x, first_boid.position.y), window_rect);
+                
+                // Scale radii based on zoom level
+                let sep_radius = model.params.separation_radius * model.camera.zoom;
+                let align_radius = model.params.alignment_radius * model.camera.zoom;
+                let cohesion_radius = model.params.cohesion_radius * model.camera.zoom;
+                
+                // Separation radius
+                draw.ellipse()
+                    .xy(pt2(screen_pos.x, screen_pos.y))
+                    .radius(sep_radius)
+                    .no_fill()
+                    .stroke(RED)
+                    .stroke_weight(1.0);
+                
+                // Alignment radius
+                draw.ellipse()
+                    .xy(pt2(screen_pos.x, screen_pos.y))
+                    .radius(align_radius)
+                    .no_fill()
+                    .stroke(GREEN)
+                    .stroke_weight(1.0);
+                
+                // Cohesion radius
+                draw.ellipse()
+                    .xy(pt2(screen_pos.x, screen_pos.y))
+                    .radius(cohesion_radius)
+                    .no_fill()
+                    .stroke(BLUE)
+                    .stroke_weight(1.0);
+                
+                // Velocity vector
+                draw.arrow()
+                    .start(pt2(screen_pos.x, screen_pos.y))
+                    .end(pt2(
+                        screen_pos.x + first_boid.velocity.x * 5.0 * model.camera.zoom,
+                        screen_pos.y + first_boid.velocity.y * 5.0 * model.camera.zoom
+                    ))
+                    .color(YELLOW)
+                    .stroke_weight(2.0);
+            }
         }
         
-        // Draw FPS and other debug info
+        // Draw FPS and other debug info (fixed position in screen space)
+        let text_x = -window_rect.w() / 2.0 + 10.0;
+        let text_y = window_rect.h() / 2.0 - 20.0;
+        let line_height = 20.0;
+        
         draw.text(&format!("FPS: {:.1}", model.debug_info.fps))
-            .x_y((-model.window_width / 2.0) + 100.0, (model.window_height / 2.0) - 20.0)
+            .x_y(text_x, text_y)
             .color(WHITE)
             .font_size(14);
         
         draw.text(&format!("Frame time: {:.2} ms", model.debug_info.frame_time.as_secs_f64() * 1000.0))
-            .x_y((-model.window_width / 2.0) + 100.0, (model.window_height / 2.0) - 40.0)
+            .x_y(text_x, text_y - line_height)
             .color(WHITE)
             .font_size(14);
         
-        draw.text(&format!("Boids: {}", model.boids.len()))
-            .x_y((-model.window_width / 2.0) + 100.0, (model.window_height / 2.0) - 60.0)
+        draw.text(&format!("Total Boids: {}", model.boids.len()))
+            .x_y(text_x, text_y - line_height * 2.0)
+            .color(WHITE)
+            .font_size(14);
+        
+        draw.text(&format!("Visible Boids: {}", model.debug_info.visible_boids))
+            .x_y(text_x, text_y - line_height * 3.0)
             .color(WHITE)
             .font_size(14);
             
-        // Add window size to debug info
-        draw.text(&format!("Window: {:.0}x{:.0}", model.window_width, model.window_height))
-            .x_y((-model.window_width / 2.0) + 100.0, (model.window_height / 2.0) - 80.0)
+        draw.text(&format!("Zoom: {:.2}x", model.camera.zoom))
+            .x_y(text_x, text_y - line_height * 4.0)
+            .color(WHITE)
+            .font_size(14);
+            
+        draw.text(&format!("World Size: {:.0}x{:.0}", WORLD_SIZE, WORLD_SIZE))
+            .x_y(text_x, text_y - line_height * 5.0)
             .color(WHITE)
             .font_size(14);
     }
@@ -500,7 +674,51 @@ fn view(app: &App, model: &Model, frame: Frame) {
     model.egui.draw_to_frame(&frame).unwrap();
 }
 
-// Handle raw window events for egui
+// Mouse moved event handler
+fn mouse_moved(_app: &App, model: &mut Model, pos: Point2) {
+    model.mouse_position = Vec2::new(pos.x, pos.y);
+}
+
+// Mouse pressed event handler
+fn mouse_pressed(_app: &App, model: &mut Model, button: MouseButton) {
+    if button == MouseButton::Left {
+        model.camera.start_drag(model.mouse_position);
+    }
+}
+
+// Mouse released event handler
+fn mouse_released(_app: &App, model: &mut Model, button: MouseButton) {
+    if button == MouseButton::Left {
+        model.camera.end_drag();
+    }
+}
+
+// Mouse wheel event handler for zooming
+fn mouse_wheel(_app: &App, model: &mut Model, delta: MouseScrollDelta, _phase: TouchPhase) {
+    match delta {
+        MouseScrollDelta::LineDelta(x, y) => {
+            // Handle trackpad pinch gestures and mouse wheel
+            let window_rect = _app.window_rect();
+            model.camera.zoom(vec2(x, y), model.mouse_position, window_rect);
+        },
+        MouseScrollDelta::PixelDelta(pos) => {
+            // Handle pixel delta (less common)
+            let window_rect = _app.window_rect();
+            model.camera.zoom(vec2(pos.x as f32, pos.y as f32) * 0.01, model.mouse_position, window_rect);
+        },
+    }
+}
+
+// Handle raw window events for egui and camera dragging
 fn raw_window_event(_app: &App, model: &mut Model, event: &nannou::winit::event::WindowEvent) {
+    // Pass events to egui first
     model.egui.handle_raw_event(event);
+    
+    // Handle mouse move events for camera dragging
+    if let nannou::winit::event::WindowEvent::CursorMoved { position, .. } = event {
+        if model.camera.drag_start.is_some() {
+            let pos = vec2(position.x as f32, position.y as f32);
+            model.camera.drag(pos);
+        }
+    }
 }
