@@ -339,7 +339,7 @@ impl Boid {
             let points = points.borrow();
             draw.polygon()
                 .color(self.color)
-                .points(points.iter().cloned())
+                .points(points.clone())
                 .xy(pt2(screen_pos.x, screen_pos.y))
                 .rotate(angle);
         });

@@ -31,7 +31,7 @@ pub struct Model {
     pub spatial_grid: SpatialGrid,
     pub cached_visible_boids: UnsafeCell<Option<Vec<usize>>>,
     pub render_needed: UnsafeCell<bool>,
-    pub last_camera_state: UnsafeCell<Option<(Vec2, f32)>>,
+    pub last_camera_state: Option<(Vec2, f32)>,
 }
 
 // Make Model safe to share across threads
@@ -103,7 +103,7 @@ pub fn model(app: &App) -> Model {
         spatial_grid,
         cached_visible_boids: UnsafeCell::new(None),
         render_needed: UnsafeCell::new(true),
-        last_camera_state: UnsafeCell::new(None),
+        last_camera_state: None,
     }
 }
 
@@ -125,34 +125,26 @@ pub fn update(app: &App, model: &mut Model, update: Update) {
     if should_reset_boids || num_boids_changed {
         reset_boids(model);
         // Clear the caches when boids are reset
-        unsafe { 
-            *model.cached_visible_boids.get() = None;
-            *model.render_needed.get() = true;
-        }
+        unsafe { *model.cached_visible_boids.get() = None; }
+        unsafe { *model.render_needed.get() = true; }
     }
     
     // Only update boids if simulation is not paused
     if !model.params.pause_simulation {
         update_boids(model);
         // Clear the caches when simulation is running
-        unsafe { 
-            *model.cached_visible_boids.get() = None;
-            *model.render_needed.get() = true;
-        }
+        unsafe { *model.cached_visible_boids.get() = None; }
+        unsafe { *model.render_needed.get() = true; }
     }
     
     // Check if camera has changed
     let current_camera_state = (model.camera.position, model.camera.zoom);
-    let last_camera_state = unsafe { &*model.last_camera_state.get() };
-    
-    if last_camera_state.is_none() || 
-       last_camera_state.unwrap().0 != current_camera_state.0 || 
-       last_camera_state.unwrap().1 != current_camera_state.1 {
+    if model.last_camera_state.is_none() || 
+       model.last_camera_state.unwrap().0 != current_camera_state.0 || 
+       model.last_camera_state.unwrap().1 != current_camera_state.1 {
         // Camera has changed, force a re-render
-        unsafe { 
-            *model.render_needed.get() = true;
-            *model.last_camera_state.get() = Some(current_camera_state);
-        }
+        unsafe { *model.render_needed.get() = true; }
+        model.last_camera_state = Some(current_camera_state);
     }
 }
 
@@ -328,27 +320,37 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
     );
     
     // Use cached visible boids if available and simulation is paused
-    let cached_visible_boids = unsafe { &*model.cached_visible_boids.get() };
-    let visible_boids_indices = if model.params.pause_simulation && cached_visible_boids.is_some() {
-        // Use the cached indices
-        cached_visible_boids.as_ref().unwrap().clone()
+    let visible_boids_indices = if model.params.pause_simulation {
+        unsafe {
+            if let Some(cached_indices) = &*model.cached_visible_boids.get() {
+                cached_indices.clone()
+            } else {
+                // Filter boids that are in the visible area
+                let indices: Vec<usize> = model.boids.iter()
+                    .enumerate()
+                    .filter(|(_, boid)| {
+                        let pos = Vec2::new(boid.position.x, boid.position.y);
+                        visible_area_with_margin.contains(pos)
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                
+                // Cache the indices
+                *model.cached_visible_boids.get() = Some(indices.clone());
+                
+                indices
+            }
+        }
     } else {
-        // Filter boids that are in the visible area
-        let indices: Vec<usize> = model.boids.iter()
+        // When not paused, always recalculate visible boids
+        model.boids.iter()
             .enumerate()
             .filter(|(_, boid)| {
                 let pos = Vec2::new(boid.position.x, boid.position.y);
                 visible_area_with_margin.contains(pos)
             })
             .map(|(i, _)| i)
-            .collect();
-        
-        // Cache the indices if simulation is paused
-        if model.params.pause_simulation {
-            unsafe { *model.cached_visible_boids.get() = Some(indices.clone()); }
-        }
-        
-        indices
+            .collect()
     };
     
     // Track visible boid count for debug info
@@ -436,10 +438,8 @@ pub fn mouse_moved(_app: &App, model: &mut Model, pos: Point2) {
     if model.camera.is_dragging {
         model.camera.drag(new_pos);
         // Clear the cached visible boids and force re-render when panning
-        unsafe { 
-            *model.cached_visible_boids.get() = None;
-            *model.render_needed.get() = true;
-        }
+        unsafe { *model.cached_visible_boids.get() = None; }
+        unsafe { *model.render_needed.get() = true; }
     }
     
     // Always update the stored mouse position
@@ -479,10 +479,8 @@ pub fn mouse_wheel(_app: &App, model: &mut Model, delta: MouseScrollDelta, _phas
     }
     
     // Clear the cached visible boids and force re-render when zooming
-    unsafe { 
-        *model.cached_visible_boids.get() = None;
-        *model.render_needed.get() = true;
-    }
+    unsafe { *model.cached_visible_boids.get() = None; }
+    unsafe { *model.render_needed.get() = true; }
 }
 
 // Handle raw window events for egui and camera dragging
