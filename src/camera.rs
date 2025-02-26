@@ -4,6 +4,11 @@
  * This module defines the Camera struct that handles zooming and panning
  * in the simulation. It provides coordinate transformations between
  * world space and screen space.
+ * 
+ * Features:
+ * - Zooming and panning controls
+ * - Coordinate transformations
+ * - Boid following mode
  */
 
 use nannou::prelude::*;
@@ -16,6 +21,7 @@ pub struct Camera {
     pub max_zoom: f32,
     pub is_dragging: bool,
     pub last_cursor_pos: Vec2,
+    pub follow_mode: bool,  // Whether the camera is following a boid
 }
 
 impl Camera {
@@ -28,6 +34,7 @@ impl Camera {
             max_zoom: 5.0,
             is_dragging: false,
             last_cursor_pos: Vec2::ZERO,
+            follow_mode: false,  // Initially not following any boid
         }
     }
 

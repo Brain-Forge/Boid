@@ -109,7 +109,11 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
     
     // Draw each visible boid with interpolation
     for &i in &visible_boids_indices {
-        model.boids[i].draw(&draw, &model.camera, window_rect, model.interpolation_alpha);
+        // Check if this is the selected boid
+        let is_selected = model.selected_boid_index.map_or(false, |selected| selected == i);
+        
+        // Draw the boid, passing the selection state
+        model.boids[i].draw(&draw, &model.camera, window_rect, model.interpolation_alpha, is_selected);
     }
     
     // Draw debug visualization if enabled

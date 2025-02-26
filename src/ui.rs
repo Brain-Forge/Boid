@@ -48,6 +48,24 @@ pub fn update_ui(
             });
             
             ui.collapsing("Camera Controls", |ui| {
+                // Add information about selected boid and follow mode
+                if let Some(boid_idx) = debug_info.selected_boid_index {
+                    ui.label(format!("Selected Boid: #{}", boid_idx));
+                    
+                    if debug_info.follow_mode_active {
+                        ui.label("Camera is following selected boid");
+                    } else {
+                        ui.label("Boid selected but not following");
+                    }
+                    
+                    ui.label("Click elsewhere to stop following");
+                    ui.separator();
+                } else {
+                    ui.label("No boid selected");
+                    ui.label("Click on a boid to select and follow it");
+                    ui.separator();
+                }
+                
                 ui.label("Zoom: Use mouse wheel or trackpad pinch gesture");
                 ui.label("Pan: Click and drag or use trackpad with two fingers");
                 if ui.button("Reset Camera").clicked() {
@@ -126,7 +144,7 @@ pub fn draw_debug_info(
     let margin = 20.0;
     let line_height = 20.0;
     let panel_width = 250.0;
-    let panel_height = line_height * 11.0 + margin; // Increased for additional lines
+    let panel_height = line_height * 13.0 + margin; // Increased for additional lines
     let panel_x = window_rect.left() + panel_width / 2.0;
     let panel_y = window_rect.top() - panel_height / 2.0;
     
@@ -146,7 +164,7 @@ pub fn draw_debug_info(
     let frustum_area_ratio = *debug_info.frustum_area_ratio.lock().unwrap();
     
     // Draw each line of text
-    let debug_texts = [
+    let mut debug_texts = vec![
         format!("FPS: {:.1}", debug_info.fps),
         format!("Frame time: {:.2} ms", debug_info.frame_time.as_secs_f64() * 1000.0),
         format!("Physics updates: {}/frame", debug_info.physics_updates_per_frame),
@@ -155,18 +173,28 @@ pub fn draw_debug_info(
         format!("Visible Boids: {}", *debug_info.visible_boids.lock().unwrap()),
         format!("Culling Efficiency: {:.1}%", culling_efficiency),
         format!("Frustum/World Ratio: {:.2}%", frustum_area_ratio * 100.0),
-        format!("Zoom: {:.2}x", camera_zoom),
+        format!("Camera Zoom: {:.2}x", camera_zoom),
         format!("World Size: {:.0}x{:.0}", world_size, world_size),
-        format!("Chunk Size: {}", debug_info.chunk_size),
     ];
     
+    // Add selected boid information
+    if let Some(boid_idx) = debug_info.selected_boid_index {
+        debug_texts.push(format!("Selected Boid: #{}", boid_idx));
+        debug_texts.push(if debug_info.follow_mode_active {
+            "Camera: Following boid".to_string()
+        } else {
+            "Camera: Free movement".to_string()
+        });
+    } else {
+        debug_texts.push("No boid selected".to_string());
+        debug_texts.push("Click on a boid to select it".to_string());
+    }
+    
+    // Draw all debug text lines
     for (i, text) in debug_texts.iter().enumerate() {
-        let y = text_y - (i as f32 * line_height);
-        
-        // Position the text with a fixed offset from the left edge
         draw.text(text)
-            .x_y(text_x + 90.0, y) // Increased offset for longer text
-            .color(nannou::color::WHITE)
-            .font_size(14);
+            .left_justify()
+            .x_y(text_x, text_y - i as f32 * line_height)
+            .color(nannou::color::WHITE);
     }
 } 

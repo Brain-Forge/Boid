@@ -298,7 +298,7 @@ impl Boid {
     }
     
     // Draw the boid
-    pub fn draw(&self, draw: &Draw, camera: &Camera, window_rect: Rect, alpha: f32) {
+    pub fn draw(&self, draw: &Draw, camera: &Camera, window_rect: Rect, alpha: f32, is_selected: bool) {
         // Get interpolated position and velocity
         let interpolated_position = self.get_interpolated_position(alpha);
         let interpolated_velocity = self.get_interpolated_velocity(alpha);
@@ -340,11 +340,20 @@ impl Boid {
         // Draw the boid using the cached points
         CACHED_POINTS.with(|points| {
             let points = points.borrow();
+            
+            // Draw the boid with its color
             draw.polygon()
                 .color(self.color)
                 .points(points.clone())
                 .xy(pt2(screen_pos.x, screen_pos.y))
                 .rotate(angle);
+            
+            // If this is the selected boid, draw a highlight around it
+            if is_selected {
+                // We're keeping the boid selected for camera following,
+                // but not drawing any visual indicators as per user request
+                // The camera movement itself is sufficient to show which boid is being followed
+            }
         });
     }
 } 

@@ -48,6 +48,8 @@ pub struct Model {
     pub last_render_time: Instant,
     // Frustum culling optimization
     pub visible_area_cache: Option<Rect>,
+    // Boid selection and following
+    pub selected_boid_index: Option<usize>,
 }
 
 // Make Model safe to share across threads
@@ -113,6 +115,7 @@ pub fn model(app: &App) -> Model {
     let physics_step_size = Duration::from_secs_f32(1.0 / params.fixed_physics_fps);
     let now = Instant::now();
     
+    // Return the model
     Model {
         boids,
         params,
@@ -124,14 +127,13 @@ pub fn model(app: &App) -> Model {
         cached_visible_boids: UnsafeCell::new(None),
         render_needed: UnsafeCell::new(true),
         last_camera_state: None,
-        // Fixed timestep physics variables
         physics_accumulator: Duration::ZERO,
         physics_step_size,
         last_update_time: now,
         interpolation_alpha: 0.0,
         last_render_time: now,
-        // Initialize frustum culling cache
         visible_area_cache: None,
+        selected_boid_index: None,
     }
 }
 
@@ -140,6 +142,8 @@ pub fn update(app: &App, model: &mut Model, update: Update) {
     // Update debug info
     model.debug_info.fps = app.fps();
     model.debug_info.frame_time = update.since_last;
+    model.debug_info.selected_boid_index = model.selected_boid_index;
+    model.debug_info.follow_mode_active = model.camera.follow_mode;
     
     // Update UI and check if boids need to be reset
     let (should_reset_boids, num_boids_changed, ui_changed) = ui::update_ui(&mut model.egui, &mut model.params, &model.debug_info);
@@ -158,6 +162,10 @@ pub fn update(app: &App, model: &mut Model, update: Update) {
         // Clear the caches when boids are reset
         unsafe { *model.cached_visible_boids.get() = None; }
         unsafe { *model.render_needed.get() = true; }
+        
+        // Clear selected boid when resetting
+        model.selected_boid_index = None;
+        model.camera.follow_mode = false;
     }
     
     // Get current time
@@ -209,6 +217,33 @@ pub fn update(app: &App, model: &mut Model, update: Update) {
         // Clear the caches when simulation is running
         unsafe { *model.cached_visible_boids.get() = None; }
         unsafe { *model.render_needed.get() = true; }
+    }
+    
+    // Update camera position if in follow mode
+    if model.camera.follow_mode {
+        if let Some(boid_idx) = model.selected_boid_index {
+            if boid_idx < model.boids.len() {
+                // Get the boid's interpolated position
+                let boid_pos = model.boids[boid_idx].get_interpolated_position(model.interpolation_alpha);
+                
+                // Smoothly move the camera towards the boid
+                let smoothing = 0.1; // Lower value = smoother/slower camera movement
+                model.camera.position = model.camera.position.lerp(
+                    Vec2::new(boid_pos.x, boid_pos.y), 
+                    smoothing
+                );
+                
+                // Force re-render when following
+                unsafe { *model.render_needed.get() = true; }
+            } else {
+                // Selected boid no longer exists
+                model.selected_boid_index = None;
+                model.camera.follow_mode = false;
+            }
+        } else {
+            // No boid selected, exit follow mode
+            model.camera.follow_mode = false;
+        }
     }
     
     // Check if camera has changed

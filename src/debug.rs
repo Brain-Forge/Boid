@@ -10,6 +10,7 @@
  * - Number of visible boids
  * - Parallel processing chunk size
  * - Culling efficiency metrics
+ * - Boid selection and camera following status
  */
 
 use std::time::Duration;
@@ -25,6 +26,8 @@ pub struct DebugInfo {
     pub interpolation_alpha: f32,
     pub culling_efficiency: Arc<Mutex<f32>>,
     pub frustum_area_ratio: Arc<Mutex<f32>>,
+    pub selected_boid_index: Option<usize>,
+    pub follow_mode_active: bool,
 }
 
 impl Default for DebugInfo {
@@ -38,6 +41,8 @@ impl Default for DebugInfo {
             interpolation_alpha: 0.0,
             culling_efficiency: Arc::new(Mutex::new(0.0)),
             frustum_area_ratio: Arc::new(Mutex::new(0.0)),
+            selected_boid_index: None,
+            follow_mode_active: false,
         }
     }
 } 
