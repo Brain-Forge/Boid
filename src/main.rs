@@ -600,7 +600,15 @@ fn view(app: &App, model: &Model, frame: Frame) {
     // Always show keyboard shortcut info at the bottom right
     let shortcut_text = "ESC: Exit Fullscreen | F11: Toggle Fullscreen | Ctrl+Q: Quit";
     let text_x = (model.window_rect.w() / 2.0) - 300.0;
-    let text_y = (-model.window_rect.h() / 2.0) + 20.0;
+    let text_y = (-model.window_rect.h() / 2.0) + 30.0;
+    
+    // Draw a black background behind the text to ensure no white bar
+    let text_width = 600.0; // Approximate width of the text
+    let text_height = 20.0; // Approximate height of the text
+    draw.rect()
+        .x_y(text_x, text_y)
+        .w_h(text_width, text_height)
+        .color(BLACK);
     
     draw.text(shortcut_text)
         .x_y(text_x, text_y)
