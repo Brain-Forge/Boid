@@ -19,12 +19,98 @@ use nannou::prelude::*;
 use nannou_egui::{self, egui, Egui};
 use rand::Rng;
 use std::time::Duration;
+use rayon::prelude::*;
+use std::sync::{Arc, Mutex};
 
 // Only keep the boid size as a constant
 const BOID_SIZE: f32 = 6.0;
 
 // Define the simulation world size (much larger than the visible area)
 const WORLD_SIZE: f32 = 5000.0;
+
+// Spatial partitioning grid for efficient neighbor lookups
+struct SpatialGrid {
+    cell_size: f32,
+    grid: Vec<Vec<usize>>,
+    grid_size: usize,
+}
+
+impl SpatialGrid {
+    fn new(cell_size: f32, world_size: f32) -> Self {
+        let grid_size = (world_size / cell_size).ceil() as usize;
+        let mut grid = Vec::with_capacity(grid_size * grid_size);
+        
+        // Initialize an empty grid
+        for _ in 0..(grid_size * grid_size) {
+            grid.push(Vec::new());
+        }
+        
+        Self {
+            cell_size,
+            grid,
+            grid_size,
+        }
+    }
+    
+    // Convert world coordinates to grid cell index
+    fn pos_to_cell_index(&self, pos: Point2, world_size: f32) -> usize {
+        let half_world = world_size / 2.0;
+        // Convert from world space to grid space (0 to grid_size)
+        let grid_x = ((pos.x + half_world) / self.cell_size).clamp(0.0, self.grid_size as f32 - 1.0) as usize;
+        let grid_y = ((pos.y + half_world) / self.cell_size).clamp(0.0, self.grid_size as f32 - 1.0) as usize;
+        
+        // Convert 2D coordinates to 1D index
+        grid_y * self.grid_size + grid_x
+    }
+    
+    // Clear the grid
+    fn clear(&mut self) {
+        for cell in &mut self.grid {
+            cell.clear();
+        }
+    }
+    
+    // Insert a boid into the grid
+    fn insert(&mut self, boid_index: usize, position: Point2, world_size: f32) {
+        let cell_index = self.pos_to_cell_index(position, world_size);
+        self.grid[cell_index].push(boid_index);
+    }
+    
+    // Get boid indices within and adjacent to the cell containing the given position
+    fn get_nearby_indices(&self, position: Point2, world_size: f32) -> Vec<usize> {
+        let half_world = world_size / 2.0;
+        
+        // Get the cell coordinates
+        let grid_x = ((position.x + half_world) / self.cell_size).floor() as isize;
+        let grid_y = ((position.y + half_world) / self.cell_size).floor() as isize;
+        
+        let mut result = Vec::new();
+        
+        // Check the cell and its neighbors (3x3 grid)
+        for y_offset in -1..=1 {
+            for x_offset in -1..=1 {
+                let check_x = grid_x + x_offset;
+                let check_y = grid_y + y_offset;
+                
+                // Skip if outside grid
+                if check_x < 0 || check_y < 0 || 
+                   check_x >= self.grid_size as isize || 
+                   check_y >= self.grid_size as isize {
+                    continue;
+                }
+                
+                let cell_index = (check_y as usize) * self.grid_size + (check_x as usize);
+                
+                // Add all boids in this cell to the result
+                for &boid_index in &self.grid[cell_index] {
+                    result.push(boid_index);
+                }
+            }
+        }
+        
+        result
+    }
+}
 
 // Camera struct to handle zooming and panning
 struct Camera {
@@ -183,7 +269,123 @@ impl Boid {
     }
     
     // Calculate separation force (avoid crowding neighbors)
-    fn separation(&self, boids: &[Boid], perception_radius: f32) -> Vec2 {
+    fn separation(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32) -> Vec2 {
+        let mut steering = Vec2::ZERO;
+        let mut count = 0;
+        
+        for &i in neighbor_indices {
+            let other = &boids[i];
+            let d = self.position.distance(other.position);
+            
+            // If this is not the same boid and it's within perception radius
+            if d > 0.0 && d < perception_radius {
+                // Calculate vector pointing away from neighbor
+                let mut diff = self.position - other.position;
+                diff = diff.normalize() / d;  // Weight by distance
+                steering += diff;
+                count += 1;
+            }
+        }
+        
+        if count > 0 {
+            steering /= count as f32;
+            
+            if steering.length() > 0.0 {
+                // Implement Reynolds: Steering = Desired - Velocity
+                steering = steering.normalize() * self.max_speed - self.velocity;
+                
+                if steering.length() > self.max_force {
+                    steering = steering.normalize() * self.max_force;
+                }
+            }
+        }
+        
+        steering
+    }
+    
+    // Calculate alignment force (steer towards average heading of neighbors)
+    fn alignment(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32) -> Vec2 {
+        let mut steering = Vec2::ZERO;
+        let mut count = 0;
+        
+        for &i in neighbor_indices {
+            let other = &boids[i];
+            let d = self.position.distance(other.position);
+            
+            // If this is not the same boid and it's within perception radius
+            if d > 0.0 && d < perception_radius {
+                steering += other.velocity;
+                count += 1;
+            }
+        }
+        
+        if count > 0 {
+            steering /= count as f32;
+            
+            // Implement Reynolds: Steering = Desired - Velocity
+            steering = steering.normalize() * self.max_speed - self.velocity;
+            
+            if steering.length() > self.max_force {
+                steering = steering.normalize() * self.max_force;
+            }
+        }
+        
+        steering
+    }
+    
+    // Calculate cohesion force (steer towards average position of neighbors)
+    fn cohesion(&self, boids: &[Boid], neighbor_indices: &[usize], perception_radius: f32) -> Vec2 {
+        let mut steering = Vec2::ZERO;
+        let mut count = 0;
+        
+        for &i in neighbor_indices {
+            let other = &boids[i];
+            let d = self.position.distance(other.position);
+            
+            // If this is not the same boid and it's within perception radius
+            if d > 0.0 && d < perception_radius {
+                steering += Vec2::new(other.position.x, other.position.y);
+                count += 1;
+            }
+        }
+        
+        if count > 0 {
+            steering /= count as f32;
+            
+            // Create desired velocity towards target
+            let desired = steering - Vec2::new(self.position.x, self.position.y);
+            
+            if desired.length() > 0.0 {
+                // Scale to maximum speed
+                let desired = desired.normalize() * self.max_speed;
+                
+                // Implement Reynolds: Steering = Desired - Velocity
+                let mut steering = desired - self.velocity;
+                
+                if steering.length() > self.max_force {
+                    steering = steering.normalize() * self.max_force;
+                }
+                
+                return steering;
+            }
+        }
+        
+        Vec2::ZERO
+    }
+    
+    // Original flock method for backward compatibility (without spatial grid)
+    fn flock(&mut self, boids: &[Boid], params: &SimulationParams) {
+        let separation = self.separation_original(boids, params.separation_radius) * params.separation_weight;
+        let alignment = self.alignment_original(boids, params.alignment_radius) * params.alignment_weight;
+        let cohesion = self.cohesion_original(boids, params.cohesion_radius) * params.cohesion_weight;
+        
+        self.apply_force(separation);
+        self.apply_force(alignment);
+        self.apply_force(cohesion);
+    }
+    
+    // Original versions of the flocking behaviors (without spatial grid)
+    fn separation_original(&self, boids: &[Boid], perception_radius: f32) -> Vec2 {
         let mut steering = Vec2::ZERO;
         let mut count = 0;
         
@@ -216,8 +418,7 @@ impl Boid {
         steering
     }
     
-    // Calculate alignment force (steer towards average heading of neighbors)
-    fn alignment(&self, boids: &[Boid], perception_radius: f32) -> Vec2 {
+    fn alignment_original(&self, boids: &[Boid], perception_radius: f32) -> Vec2 {
         let mut steering = Vec2::ZERO;
         let mut count = 0;
         
@@ -245,8 +446,7 @@ impl Boid {
         steering
     }
     
-    // Calculate cohesion force (steer towards average position of neighbors)
-    fn cohesion(&self, boids: &[Boid], perception_radius: f32) -> Vec2 {
+    fn cohesion_original(&self, boids: &[Boid], perception_radius: f32) -> Vec2 {
         let mut steering = Vec2::ZERO;
         let mut count = 0;
         
@@ -284,17 +484,6 @@ impl Boid {
         Vec2::ZERO
     }
     
-    // Apply all flocking behaviors
-    fn flock(&mut self, boids: &[Boid], params: &SimulationParams) {
-        let separation = self.separation(boids, params.separation_radius) * params.separation_weight;
-        let alignment = self.alignment(boids, params.alignment_radius) * params.alignment_weight;
-        let cohesion = self.cohesion(boids, params.cohesion_radius) * params.cohesion_weight;
-        
-        self.apply_force(separation);
-        self.apply_force(alignment);
-        self.apply_force(cohesion);
-    }
-    
     // Draw the boid
     fn draw(&self, draw: &Draw, camera: &Camera, window_rect: Rect) {
         // Convert boid position from world space to screen space
@@ -319,18 +508,6 @@ impl Boid {
             .xy(pt2(screen_pos.x, screen_pos.y))
             .rotate(angle);
     }
-    
-    // Check if the boid is visible in the current view
-    fn is_visible(&self, camera: &Camera, window_rect: Rect) -> bool {
-        let screen_pos = camera.world_to_screen(Vec2::new(self.position.x, self.position.y), window_rect);
-        let scaled_size = BOID_SIZE * camera.zoom * 2.0; // Add some margin
-        
-        // Check if the boid is within the visible area
-        screen_pos.x + scaled_size >= window_rect.left() &&
-        screen_pos.x - scaled_size <= window_rect.right() &&
-        screen_pos.y + scaled_size >= window_rect.bottom() &&
-        screen_pos.y - scaled_size <= window_rect.top()
-    }
 }
 
 // Parameters for the simulation that can be adjusted via UI
@@ -345,6 +522,10 @@ struct SimulationParams {
     max_speed: f32,
     show_debug: bool,
     pause_simulation: bool,
+    // Performance settings
+    enable_parallel: bool,
+    enable_spatial_grid: bool,
+    cell_size_factor: f32,  // Multiplier for cell size relative to perception radius
 }
 
 impl Default for SimulationParams {
@@ -360,6 +541,10 @@ impl Default for SimulationParams {
             max_speed: 4.0,
             show_debug: false,
             pause_simulation: false,
+            // Default performance settings
+            enable_parallel: true,
+            enable_spatial_grid: true,
+            cell_size_factor: 1.0,
         }
     }
 }
@@ -368,7 +553,7 @@ impl Default for SimulationParams {
 struct DebugInfo {
     fps: f32,
     frame_time: Duration,
-    visible_boids: usize,
+    visible_boids: Arc<Mutex<usize>>,
 }
 
 impl Default for DebugInfo {
@@ -376,7 +561,7 @@ impl Default for DebugInfo {
         Self {
             fps: 0.0,
             frame_time: Duration::from_secs(0),
-            visible_boids: 0,
+            visible_boids: Arc::new(Mutex::new(0)),
         }
     }
 }
@@ -389,6 +574,7 @@ struct Model {
     debug_info: DebugInfo,
     camera: Camera,
     mouse_position: Vec2,
+    spatial_grid: SpatialGrid,
 }
 
 fn main() {
@@ -432,6 +618,11 @@ fn model(app: &App) -> Model {
     // Create camera
     let camera = Camera::new();
     
+    // Create spatial grid, cell size should be at least as large as the largest perception radius
+    // A typical good value is the maximum perception radius
+    let cell_size = f32::max(params.separation_radius, f32::max(params.alignment_radius, params.cohesion_radius));
+    let spatial_grid = SpatialGrid::new(cell_size, WORLD_SIZE);
+    
     // Create boids
     let mut boids = Vec::with_capacity(params.num_boids);
     let mut rng = rand::thread_rng();
@@ -455,6 +646,7 @@ fn model(app: &App) -> Model {
         debug_info: DebugInfo::default(),
         camera,
         mouse_position: Vec2::ZERO,
+        spatial_grid,
     }
 }
 
@@ -514,6 +706,20 @@ fn update(app: &App, model: &mut Model, update: Update) {
                     ui.label(format!("Camera Position: ({:.0}, {:.0})", model.camera.position.x, model.camera.position.y));
                 });
                 
+                ui.collapsing("Performance Tuning", |ui| {
+                    ui.checkbox(&mut model.params.enable_parallel, "Enable Parallel Processing");
+                    ui.checkbox(&mut model.params.enable_spatial_grid, "Enable Spatial Grid");
+                    ui.add(egui::Slider::new(&mut model.params.cell_size_factor, 0.5..=2.0).text("Cell Size Factor"));
+                    
+                    ui.separator();
+                    
+                    // Performance metrics
+                    ui.label(format!("FPS: {:.1}", model.debug_info.fps));
+                    ui.label(format!("Frame time: {:.2} ms", model.debug_info.frame_time.as_secs_f64() * 1000.0));
+                    ui.label(format!("Total Boids: {}", model.boids.len()));
+                    ui.label(format!("Visible Boids: {}", *model.debug_info.visible_boids.lock().unwrap()));
+                });
+                
                 ui.checkbox(&mut model.params.show_debug, "Show Debug Info");
                 ui.checkbox(&mut model.params.pause_simulation, "Pause Simulation");
             });
@@ -539,25 +745,102 @@ fn update(app: &App, model: &mut Model, update: Update) {
     
     // Only update boids if simulation is not paused
     if !model.params.pause_simulation {
-        // Update each boid
-        let boids_clone = model.boids.clone(); // Clone to avoid borrow checker issues
-        
-        for boid in &mut model.boids {
-            boid.flock(&boids_clone, &model.params);
-            boid.update();
-            // Use the world size for wrapping
-            boid.wrap_edges(WORLD_SIZE);
+        // Only use spatial grid if enabled
+        if model.params.enable_spatial_grid {
+            // Ensure the spatial grid has appropriate cell size
+            let max_radius = f32::max(
+                model.params.separation_radius,
+                f32::max(model.params.alignment_radius, model.params.cohesion_radius)
+            );
+            
+            // Apply the cell size factor
+            let cell_size = max_radius * model.params.cell_size_factor;
+            
+            // Recreate grid if perception radii have changed significantly
+            if (cell_size - model.spatial_grid.cell_size).abs() > 5.0 {
+                model.spatial_grid = SpatialGrid::new(cell_size, WORLD_SIZE);
+            }
+            
+            // Clear the spatial grid
+            model.spatial_grid.clear();
+            
+            // Add boids to the spatial grid
+            for (i, boid) in model.boids.iter().enumerate() {
+                model.spatial_grid.insert(i, boid.position, WORLD_SIZE);
+            }
+            
+            // Process each boid with spatial partitioning
+            let boids = &model.boids;
+            let params = &model.params;
+            let spatial_grid = &model.spatial_grid;
+            
+            // Collect accelerations first to avoid borrow checker issues
+            let mut accelerations = Vec::with_capacity(boids.len());
+            
+            // Choose between parallel and sequential processing based on the setting
+            if model.params.enable_parallel {
+                // Phase 1: Calculate accelerations in parallel
+                accelerations = (0..boids.len()).into_par_iter().map(|i| {
+                    // Get nearby boids from the spatial grid
+                    let nearby_indices = spatial_grid.get_nearby_indices(boids[i].position, WORLD_SIZE);
+                    
+                    // Calculate forces
+                    let separation = boids[i].separation(boids, &nearby_indices, params.separation_radius) * params.separation_weight;
+                    let alignment = boids[i].alignment(boids, &nearby_indices, params.alignment_radius) * params.alignment_weight;
+                    let cohesion = boids[i].cohesion(boids, &nearby_indices, params.cohesion_radius) * params.cohesion_weight;
+                    
+                    // Return combined forces
+                    separation + alignment + cohesion
+                }).collect();
+            } else {
+                // Sequential processing
+                for i in 0..boids.len() {
+                    // Get nearby boids from the spatial grid
+                    let nearby_indices = spatial_grid.get_nearby_indices(boids[i].position, WORLD_SIZE);
+                    
+                    // Calculate forces
+                    let separation = boids[i].separation(boids, &nearby_indices, params.separation_radius) * params.separation_weight;
+                    let alignment = boids[i].alignment(boids, &nearby_indices, params.alignment_radius) * params.alignment_weight;
+                    let cohesion = boids[i].cohesion(boids, &nearby_indices, params.cohesion_radius) * params.cohesion_weight;
+                    
+                    // Store combined forces
+                    accelerations.push(separation + alignment + cohesion);
+                }
+            }
+            
+            // Phase 2: Apply accelerations and update positions
+            for i in 0..model.boids.len() {
+                let boid = &mut model.boids[i];
+                
+                // Apply the precalculated acceleration
+                boid.apply_force(accelerations[i]);
+                
+                // Update position based on velocity and acceleration
+                boid.update();
+                boid.wrap_edges(WORLD_SIZE);
+            }
+            
+            // Phase 3: Rebuild the spatial grid with updated positions
+            model.spatial_grid.clear();
+            for (i, boid) in model.boids.iter().enumerate() {
+                model.spatial_grid.insert(i, boid.position, WORLD_SIZE);
+            }
+        } else {
+            // Fallback to the original O(n²) approach without spatial partitioning
+            // Create a copy of boids for the calculations
+            let boids_clone = model.boids.clone();
+            
+            // Update each boid
+            for boid in &mut model.boids {
+                boid.flock(&boids_clone, &model.params);
+                boid.update();
+                boid.wrap_edges(WORLD_SIZE);
+            }
         }
     }
     
-    // Count visible boids for debug info
-    if model.params.show_debug {
-        let window_rect = app.window_rect();
-        model.debug_info.visible_boids = model.boids
-            .iter()
-            .filter(|boid| boid.is_visible(&model.camera, window_rect))
-            .count();
-    }
+    // We'll calculate visible boids during view function now
+    // No need to count visible boids here as we do it in the view function
 }
 
 fn view(app: &App, model: &Model, frame: Frame) {
@@ -586,11 +869,42 @@ fn view(app: &App, model: &Model, frame: Frame) {
         .stroke_weight(1.0)
         .stroke(rgba(0.3, 0.3, 0.3, 1.0));
     
-    // Draw each boid (only if visible in the current view)
-    for boid in &model.boids {
-        if boid.is_visible(&model.camera, window_rect) {
-            boid.draw(&draw, &model.camera, window_rect);
-        }
+    // Calculate the visible area in world space for culling
+    let visible_area = Rect::from_corners(
+        pt2(
+            model.camera.screen_to_world(pt2(window_rect.left(), window_rect.bottom()), window_rect).x,
+            model.camera.screen_to_world(pt2(window_rect.left(), window_rect.bottom()), window_rect).y
+        ),
+        pt2(
+            model.camera.screen_to_world(pt2(window_rect.right(), window_rect.top()), window_rect).x,
+            model.camera.screen_to_world(pt2(window_rect.right(), window_rect.top()), window_rect).y
+        )
+    );
+    
+    // Add a margin to the visible area (scaled by zoom level)
+    let margin = BOID_SIZE * 2.0 / model.camera.zoom;
+    let visible_area_with_margin = Rect::from_corners(
+        pt2(visible_area.left() - margin, visible_area.bottom() - margin),
+        pt2(visible_area.right() + margin, visible_area.top() + margin)
+    );
+    
+    // Use frustum culling: only draw boids that are in the visible area
+    let visible_boids: Vec<&Boid> = model.boids.iter()
+        .filter(|boid| {
+            let pos = Vec2::new(boid.position.x, boid.position.y);
+            visible_area_with_margin.contains(pos)
+        })
+        .collect();
+    
+    // Track visible boid count for debug info
+    if model.params.show_debug {
+        let mut visible_boids_count = model.debug_info.visible_boids.lock().unwrap();
+        *visible_boids_count = visible_boids.len();
+    }
+    
+    // Draw each visible boid
+    for boid in visible_boids {
+        boid.draw(&draw, &model.camera, window_rect);
     }
     
     // Draw debug visualization if enabled
@@ -599,7 +913,7 @@ fn view(app: &App, model: &Model, frame: Frame) {
         if !model.boids.is_empty() {
             let first_boid = &model.boids[0];
             
-            if first_boid.is_visible(&model.camera, window_rect) {
+            if visible_area_with_margin.contains(Vec2::new(first_boid.position.x, first_boid.position.y)) {
                 let screen_pos = model.camera.world_to_screen(Vec2::new(first_boid.position.x, first_boid.position.y), window_rect);
                 
                 // Scale radii based on zoom level
@@ -671,7 +985,7 @@ fn view(app: &App, model: &Model, frame: Frame) {
             format!("FPS: {:.1}", model.debug_info.fps),
             format!("Frame time: {:.2} ms", model.debug_info.frame_time.as_secs_f64() * 1000.0),
             format!("Total Boids: {}", model.boids.len()),
-            format!("Visible Boids: {}", model.debug_info.visible_boids),
+            format!("Visible Boids: {}", model.debug_info.visible_boids.lock().unwrap()),
             format!("Zoom: {:.2}x", model.camera.zoom),
             format!("World Size: {:.0}x{:.0}", WORLD_SIZE, WORLD_SIZE),
         ];
