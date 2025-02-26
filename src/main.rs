@@ -15,6 +15,7 @@
  * - Large simulation space that extends beyond the visible area
  * - Spatial partitioning for efficient neighbor lookups
  * - Parallel processing for performance optimization
+ * - Modular code organization for better maintainability
  */
 
 // Import the library modules
@@ -25,6 +26,10 @@ mod params;
 mod debug;
 mod app;
 mod ui;
+mod physics;
+mod renderer;
+mod culling;
+mod input;
 
 // Re-export constants
 pub const BOID_SIZE: f32 = 6.0;

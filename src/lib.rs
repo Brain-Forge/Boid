@@ -21,6 +21,10 @@ pub mod params;
 pub mod debug;
 pub mod app;
 pub mod ui;
+pub mod physics;
+pub mod renderer;
+pub mod culling;
+pub mod input;
 
 // Constants
 pub const BOID_SIZE: f32 = 6.0;
