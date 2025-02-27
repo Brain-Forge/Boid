@@ -1,134 +1,175 @@
 /*
  * UI Module
  * 
- * This module contains functions for creating and updating the user interface
- * using nannou_egui. It provides controls for adjusting simulation parameters.
- * Parameter change detection is now handled by the SimulationParams struct.
+ * This module handles the user interface for the boid simulation.
+ * It provides controls for adjusting simulation parameters and displays
+ * debug information when enabled.
  */
 
-use nannou_egui::{egui, Egui};
+use nannou::prelude::*;
+use nannou_egui::egui;
+use crate::app::Model;
 use crate::params::SimulationParams;
 use crate::debug::DebugInfo;
 
-// Update the UI and return whether boids should be reset, number of boids changed, and if any UI changes occurred
-pub fn update_ui(
-    egui: &mut Egui, 
-    params: &mut SimulationParams, 
-    debug_info: &DebugInfo
-) -> (bool, bool, bool) {
-    let mut should_reset_boids = false;
+// UI response structure
+pub struct UiResponse {
+    // reset_boids field removed
+}
+
+// Update the UI
+pub fn update_ui(app: &App, model: &mut Model, update: &Update) -> UiResponse {
+    // reset_boids variable removed
     
-    // Take a snapshot of current parameter values for change detection
-    params.take_snapshot();
+    // Begin UI frame
+    let ctx = model.egui.begin_frame();
     
-    let ctx = egui.begin_frame();
-    
+    // Create a window for the UI
     egui::Window::new("Simulation Controls")
-        .default_pos([10.0, 10.0])
+        .default_pos([20.0, 20.0])
         .show(&ctx, |ui| {
-            ui.collapsing("Boid Parameters", |ui| {
-                ui.add(egui::Slider::new(&mut params.num_boids, SimulationParams::get_num_boids_range())
-                    .logarithmic(true)
-                    .text("Number of Boids"));
+            ui.heading("Boid Parameters");
+            
+            // Number of boids slider - direct control without mapping
+            ui.add(egui::Slider::new(&mut model.params.num_boids, *SimulationParams::get_num_boids_range().start()..=*SimulationParams::get_num_boids_range().end())
+                .text("Number of Boids")
+                .clamp_to_range(true));
+            
+            // Weights
+            ui.add(egui::Slider::new(&mut model.params.separation_weight, SimulationParams::get_weight_range())
+                .text("Separation Weight")
+                .clamp_to_range(true));
+            
+            ui.add(egui::Slider::new(&mut model.params.alignment_weight, SimulationParams::get_weight_range())
+                .text("Alignment Weight")
+                .clamp_to_range(true));
+            
+            ui.add(egui::Slider::new(&mut model.params.cohesion_weight, SimulationParams::get_weight_range())
+                .text("Cohesion Weight")
+                .clamp_to_range(true));
+            
+            // Perception radii
+            ui.add(egui::Slider::new(&mut model.params.separation_radius, SimulationParams::get_radius_range())
+                .text("Separation Radius")
+                .clamp_to_range(true));
+            
+            ui.add(egui::Slider::new(&mut model.params.alignment_radius, SimulationParams::get_radius_range())
+                .text("Alignment Radius")
+                .clamp_to_range(true));
+            
+            ui.add(egui::Slider::new(&mut model.params.cohesion_radius, SimulationParams::get_radius_range())
+                .text("Cohesion Radius")
+                .clamp_to_range(true));
+            
+            // Max speed
+            ui.add(egui::Slider::new(&mut model.params.max_speed, SimulationParams::get_max_speed_range())
+                .text("Max Speed")
+                .clamp_to_range(true));
+            
+            // Reset button removed
+            
+            ui.separator();
+            
+            ui.heading("Performance Settings");
+            
+            // Spatial grid toggle
+            ui.checkbox(&mut model.params.enable_spatial_grid, "Enable Spatial Grid");
+            
+            if model.params.enable_spatial_grid {
+                // Cell size factor
+                ui.add(egui::Slider::new(&mut model.params.cell_size_factor, SimulationParams::get_cell_size_factor_range())
+                    .text("Cell Size Factor")
+                    .clamp_to_range(true));
                 
-                if ui.button("Reset Boids").clicked() {
-                    should_reset_boids = true;
+                // Adaptive cell sizing
+                ui.checkbox(&mut model.params.adaptive_cell_sizing, "Adaptive Cell Sizing");
+                
+                if model.params.adaptive_cell_sizing {
+                    ui.label(format!("Current Cell Size: {:.1}", model.spatial_grid.cell_size));
+                }
+            }
+            
+            // Parallel processing toggle
+            ui.checkbox(&mut model.params.enable_parallel, "Enable Parallel Processing");
+            
+            // Squared distance toggle
+            ui.checkbox(&mut model.params.enable_squared_distance, "Use Squared Distances");
+            
+            // Frustum culling toggle
+            ui.checkbox(&mut model.params.enable_frustum_culling, "Enable Frustum Culling");
+            
+            ui.separator();
+            
+            ui.heading("Timing Settings");
+            
+            // Physics FPS
+            ui.add(egui::Slider::new(&mut model.params.fixed_physics_fps, SimulationParams::get_physics_fps_range())
+                .text("Physics FPS")
+                .clamp_to_range(true));
+            
+            // Target render FPS
+            ui.add(egui::Slider::new(&mut model.params.target_render_fps, SimulationParams::get_render_fps_range())
+                .text("Target Render FPS (0 = unlimited)")
+                .clamp_to_range(true));
+            
+            // Interpolation toggle
+            ui.checkbox(&mut model.params.enable_interpolation, "Enable Interpolation");
+            
+            ui.separator();
+            
+            // Debug info toggle
+            ui.checkbox(&mut model.params.show_debug, "Show Debug Info");
+            
+            // Pause toggle
+            ui.checkbox(&mut model.params.pause_simulation, "Pause Simulation");
+            
+            // Display debug info if enabled
+            if model.params.show_debug {
+                ui.separator();
+                ui.heading("Debug Info");
+                
+                ui.label(format!("FPS: {:.1}", app.fps()));
+                ui.label(format!("Frame Time: {:.2} ms", update.since_last.as_secs_f32() * 1000.0));
+                
+                let debug_info = unsafe { &*model.debug_info.get() };
+                
+                if let Some(chunk_size) = debug_info.chunk_size {
+                    ui.label(format!("Chunk Size: {}", chunk_size));
                 }
                 
-                ui.add(egui::Slider::new(&mut params.max_speed, SimulationParams::get_max_speed_range()).text("Max Speed"));
-            });
-            
-            ui.collapsing("Flocking Behavior", |ui| {
-                ui.add(egui::Slider::new(&mut params.separation_weight, SimulationParams::get_weight_range()).text("Separation Weight"));
-                ui.add(egui::Slider::new(&mut params.alignment_weight, SimulationParams::get_weight_range()).text("Alignment Weight"));
-                ui.add(egui::Slider::new(&mut params.cohesion_weight, SimulationParams::get_weight_range()).text("Cohesion Weight"));
-                ui.add(egui::Slider::new(&mut params.separation_radius, SimulationParams::get_radius_range()).text("Separation Radius"));
-                ui.add(egui::Slider::new(&mut params.alignment_radius, SimulationParams::get_radius_range()).text("Alignment Radius"));
-                ui.add(egui::Slider::new(&mut params.cohesion_radius, SimulationParams::get_radius_range()).text("Cohesion Radius"));
-            });
-            
-            ui.collapsing("Camera Controls", |ui| {
-                // Add information about selected boid and follow mode
-                if let Some(boid_idx) = debug_info.selected_boid_index {
-                    ui.label(format!("Selected Boid: #{}", boid_idx));
+                if let Some(selected_boid) = debug_info.selected_boid_index {
+                    ui.label(format!("Selected Boid: {}", selected_boid));
                     
                     if debug_info.follow_mode_active {
-                        ui.label("Camera is following selected boid");
-                    } else {
-                        ui.label("Boid selected but not following");
+                        ui.label("Follow Mode: Active");
                     }
-                    
-                    ui.label("Click elsewhere to stop following");
-                    ui.separator();
-                } else {
-                    ui.label("No boid selected");
-                    ui.label("Click on a boid to select and follow it");
-                    ui.separator();
                 }
                 
-                ui.label("Zoom: Use mouse wheel or trackpad pinch gesture");
-                ui.label("Pan: Click and drag or use trackpad with two fingers");
-                if ui.button("Reset Camera").clicked() {
-                    // We'll handle this in the app module
-                }
-                ui.label(format!("Zoom Level: {:.2}x", 1.0)); // Placeholder, will be updated in app
-                ui.label(format!("Camera Position: ({:.0}, {:.0})", 0.0, 0.0)); // Placeholder
-            });
-            
-            ui.collapsing("Timing Settings", |ui| {
-                ui.add(egui::Slider::new(&mut params.fixed_physics_fps, SimulationParams::get_physics_fps_range())
-                    .text("Physics FPS"));
-                
-                ui.add(egui::Slider::new(&mut params.target_render_fps, SimulationParams::get_render_fps_range())
-                    .text("Target Render FPS (0 = unlimited)"));
-                
-                ui.checkbox(&mut params.enable_interpolation, "Enable Interpolation");
-                
-                ui.separator();
-                
-                // Display actual FPS
-                ui.label(format!("Actual FPS: {:.1}", debug_info.fps));
-                ui.label(format!("Frame time: {:.2} ms", debug_info.frame_time.as_secs_f64() * 1000.0));
-                ui.label(format!("Physics updates per frame: {}", debug_info.physics_updates_per_frame));
-                if params.enable_interpolation {
-                    ui.label(format!("Interpolation alpha: {:.3}", debug_info.interpolation_alpha));
-                }
-            });
-            
-            ui.collapsing("Performance Tuning", |ui| {
-                ui.checkbox(&mut params.enable_parallel, "Enable Parallel Processing");
-                ui.checkbox(&mut params.enable_spatial_grid, "Enable Spatial Grid");
-                ui.checkbox(&mut params.enable_squared_distance, "Use Squared Distance (Avoid sqrt)");
-                ui.checkbox(&mut params.enable_frustum_culling, "Enable Frustum Culling");
-                ui.add(egui::Slider::new(&mut params.cell_size_factor, SimulationParams::get_cell_size_factor_range()).text("Cell Size Factor"));
-                
-                ui.separator();
-                
-                // Performance metrics
-                ui.label(format!("Total Boids: {}", params.num_boids));
-                ui.label(format!("Visible Boids: {}", *debug_info.visible_boids.lock().unwrap()));
-                if params.enable_parallel {
-                    ui.label(format!("Chunk Size: {} boids/thread", debug_info.chunk_size));
+                if let Some(visible_count) = debug_info.visible_boids_count {
+                    ui.label(format!("Visible Boids: {}/{}", visible_count, model.boids.len()));
                 }
                 
-                // Add culling efficiency metric from debug info
-                let culling_efficiency = *debug_info.culling_efficiency.lock().unwrap();
-                ui.label(format!("Culling Efficiency: {:.1}%", culling_efficiency));
+                if let Some(physics_updates) = debug_info.physics_updates_per_frame {
+                    ui.label(format!("Physics Updates: {}/frame", physics_updates));
+                }
                 
-                // Add frustum area ratio
-                let frustum_area_ratio = *debug_info.frustum_area_ratio.lock().unwrap();
-                ui.label(format!("Frustum/World Ratio: {:.2}%", frustum_area_ratio * 100.0));
-            });
-            
-            ui.checkbox(&mut params.show_debug, "Show Debug Info");
-            ui.checkbox(&mut params.pause_simulation, "Pause Simulation");
+                if let Some(alpha) = debug_info.interpolation_alpha {
+                    ui.label(format!("Interpolation: {:.3}", alpha));
+                }
+                
+                if let Some(culling_efficiency) = debug_info.culling_efficiency {
+                    ui.label(format!("Culling Efficiency: {:.1}%", culling_efficiency));
+                }
+                
+                if let Some(frustum_ratio) = debug_info.frustum_area_ratio {
+                    ui.label(format!("Frustum/World Ratio: {:.2}%", frustum_ratio * 100.0));
+                }
+            }
         });
     
-    // Detect parameter changes
-    let (_, num_boids_changed, ui_changed) = params.detect_changes();
-    
-    // Return the combined result
-    (should_reset_boids, num_boids_changed, ui_changed)
+    UiResponse {
+        // reset_boids field removed
+    }
 }
 
 // Draw debug information on the screen
@@ -160,17 +201,17 @@ pub fn draw_debug_info(
     let text_y = window_rect.top() - margin;
     
     // Get culling metrics
-    let culling_efficiency = *debug_info.culling_efficiency.lock().unwrap();
-    let frustum_area_ratio = *debug_info.frustum_area_ratio.lock().unwrap();
+    let culling_efficiency = debug_info.culling_efficiency.unwrap_or(0.0);
+    let frustum_area_ratio = debug_info.frustum_area_ratio.unwrap_or(0.0);
     
     // Draw each line of text
     let mut debug_texts = vec![
         format!("FPS: {:.1}", debug_info.fps),
         format!("Frame time: {:.2} ms", debug_info.frame_time.as_secs_f64() * 1000.0),
-        format!("Physics updates: {}/frame", debug_info.physics_updates_per_frame),
-        format!("Interpolation: {:.3}", debug_info.interpolation_alpha),
+        format!("Physics updates: {}", debug_info.physics_updates_per_frame.unwrap_or(0)),
+        format!("Interpolation: {:.3}", debug_info.interpolation_alpha.unwrap_or(0.0)),
         format!("Total Boids: {}", boids_len),
-        format!("Visible Boids: {}", *debug_info.visible_boids.lock().unwrap()),
+        format!("Visible Boids: {}", debug_info.visible_boids_count.unwrap_or(0)),
         format!("Culling Efficiency: {:.1}%", culling_efficiency),
         format!("Frustum/World Ratio: {:.2}%", frustum_area_ratio * 100.0),
         format!("Camera Zoom: {:.2}x", camera_zoom),

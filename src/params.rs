@@ -5,6 +5,8 @@
  * adjustable parameters for the boid simulation. These parameters can be
  * modified through the UI. It also provides methods for parameter change detection
  * and management to improve separation of concerns.
+ * 
+ * Optimized for performance with spatial partitioning and adaptive settings.
  */
 
 // Parameters for the simulation that can be adjusted via UI
@@ -25,6 +27,7 @@ pub struct SimulationParams {
     pub cell_size_factor: f32,  // Multiplier for cell size relative to perception radius
     pub enable_squared_distance: bool, // Use squared distance calculations to avoid sqrt operations
     pub enable_frustum_culling: bool, // Enable frustum culling optimization
+    pub adaptive_cell_sizing: bool, // Dynamically adjust cell size based on boid density
     // Timing settings
     pub fixed_physics_fps: f32, // Fixed physics update rate (updates per second)
     pub target_render_fps: f32, // Target rendering framerate (0 = unlimited)
@@ -45,9 +48,9 @@ struct ParamSnapshot {
     cohesion_radius: f32,
     max_speed: f32,
     show_debug: bool,
-    pause_simulation: bool,
     enable_squared_distance: bool,
     enable_frustum_culling: bool,
+    adaptive_cell_sizing: bool,
     fixed_physics_fps: f32,
     target_render_fps: f32,
     enable_interpolation: bool,
@@ -69,9 +72,10 @@ impl Default for SimulationParams {
             // Default performance settings
             enable_parallel: true,
             enable_spatial_grid: true,
-            cell_size_factor: 1.0,
+            cell_size_factor: 1.2, // Slightly larger cells to ensure all neighbors are captured
             enable_squared_distance: true, // Enable by default for better performance
             enable_frustum_culling: true,  // Enable frustum culling by default
+            adaptive_cell_sizing: true,    // Enable adaptive cell sizing by default
             // Default timing settings
             fixed_physics_fps: 60.0, // 60 physics updates per second
             target_render_fps: 0.0,  // Unlimited rendering by default
@@ -95,59 +99,54 @@ impl SimulationParams {
             cohesion_radius: self.cohesion_radius,
             max_speed: self.max_speed,
             show_debug: self.show_debug,
-            pause_simulation: self.pause_simulation,
             enable_squared_distance: self.enable_squared_distance,
             enable_frustum_culling: self.enable_frustum_culling,
+            adaptive_cell_sizing: self.adaptive_cell_sizing,
             fixed_physics_fps: self.fixed_physics_fps,
             target_render_fps: self.target_render_fps,
             enable_interpolation: self.enable_interpolation,
         });
     }
     
-    // Check if any parameters have changed since the last snapshot
-    // Returns a tuple of (should_reset_boids, num_boids_changed, any_ui_changed)
+    // Detect changes in parameters and return flags for different types of changes
+    // Returns (boids_changed, physics_changed, rendering_changed)
     pub fn detect_changes(&self) -> (bool, bool, bool) {
-        let mut num_boids_changed = false;
-        let mut ui_changed = false;
-        
-        // If we don't have previous values, nothing has changed
         if let Some(prev) = &self.previous_values {
-            // Check for number of boids change
-            if self.num_boids != prev.num_boids {
-                num_boids_changed = true;
-                ui_changed = true;
-            }
+            let boids_changed = self.num_boids != prev.num_boids;
             
-            // Check for other parameter changes
-            if self.separation_weight != prev.separation_weight ||
-               self.alignment_weight != prev.alignment_weight ||
-               self.cohesion_weight != prev.cohesion_weight ||
-               self.separation_radius != prev.separation_radius ||
-               self.alignment_radius != prev.alignment_radius ||
-               self.cohesion_radius != prev.cohesion_radius ||
-               self.max_speed != prev.max_speed ||
-               self.show_debug != prev.show_debug ||
-               self.pause_simulation != prev.pause_simulation ||
-               self.enable_squared_distance != prev.enable_squared_distance ||
-               self.enable_frustum_culling != prev.enable_frustum_culling ||
-               self.fixed_physics_fps != prev.fixed_physics_fps ||
-               self.target_render_fps != prev.target_render_fps ||
-               self.enable_interpolation != prev.enable_interpolation {
-                ui_changed = true;
-            }
+            let physics_changed = 
+                self.separation_weight != prev.separation_weight ||
+                self.alignment_weight != prev.alignment_weight ||
+                self.cohesion_weight != prev.cohesion_weight ||
+                self.separation_radius != prev.separation_radius ||
+                self.alignment_radius != prev.alignment_radius ||
+                self.cohesion_radius != prev.cohesion_radius ||
+                self.max_speed != prev.max_speed ||
+                self.enable_squared_distance != prev.enable_squared_distance ||
+                self.adaptive_cell_sizing != prev.adaptive_cell_sizing;
+            
+            let rendering_changed = 
+                self.show_debug != prev.show_debug ||
+                self.enable_frustum_culling != prev.enable_frustum_culling ||
+                self.fixed_physics_fps != prev.fixed_physics_fps ||
+                self.target_render_fps != prev.target_render_fps ||
+                self.enable_interpolation != prev.enable_interpolation;
+            
+            (boids_changed, physics_changed, rendering_changed)
+        } else {
+            // If no previous values, consider everything changed
+            (true, true, true)
         }
-        
-        // The first element (should_reset_boids) will be set by the UI when the reset button is clicked
-        (false, num_boids_changed, ui_changed)
     }
     
-    // Get parameter ranges for UI sliders
+    // Range getters for UI sliders
+    
     pub fn get_num_boids_range() -> std::ops::RangeInclusive<usize> {
-        10..=100000
+        10..=50000
     }
     
     pub fn get_max_speed_range() -> std::ops::RangeInclusive<f32> {
-        1.0..=100.0
+        1.0..=10.0
     }
     
     pub fn get_weight_range() -> std::ops::RangeInclusive<f32> {
@@ -155,15 +154,15 @@ impl SimulationParams {
     }
     
     pub fn get_radius_range() -> std::ops::RangeInclusive<f32> {
-        10.0..=100.0
+        5.0..=100.0
     }
     
     pub fn get_cell_size_factor_range() -> std::ops::RangeInclusive<f32> {
-        0.01..=10.0
+        0.5..=2.0
     }
     
     pub fn get_physics_fps_range() -> std::ops::RangeInclusive<f32> {
-        10.0..=240.0
+        30.0..=240.0
     }
     
     pub fn get_render_fps_range() -> std::ops::RangeInclusive<f32> {
