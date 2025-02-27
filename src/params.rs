@@ -65,22 +65,22 @@ impl Default for SimulationParams {
             separation_weight: 1.5,
             alignment_weight: 1.0,
             cohesion_weight: 1.0,
-            separation_radius: 25.0,
-            alignment_radius: 50.0,
-            cohesion_radius: 50.0,
-            max_speed: 4.0,
+            separation_radius: 50.0,
+            alignment_radius: 200.0,
+            cohesion_radius: 150.0,
+            max_speed: 50.0,
             world_size: 5000.0, // Default world size (same as the constant)
             show_debug: false,
             pause_simulation: false,
             // Default performance settings
             enable_parallel: true,
             enable_spatial_grid: true,
-            cell_size_factor: 0.5, // Changed from 1.2 to 0.5 for smaller cells
+            cell_size_factor: 0.1,
             enable_squared_distance: true, // Enable by default for better performance
             enable_frustum_culling: true,  // Enable frustum culling by default
             adaptive_cell_sizing: true,    // Enable adaptive cell sizing by default
             // Default timing settings
-            fixed_physics_fps: 60.0, // 60 physics updates per second
+            fixed_physics_fps: 30.0, // 60 physics updates per second
             target_render_fps: 0.0,  // Unlimited rendering by default
             enable_interpolation: true, // Enable interpolation by default
             // Initialize with no previous values
@@ -148,7 +148,7 @@ impl SimulationParams {
     // Range getters for UI sliders
     
     pub fn get_num_boids_range() -> std::ops::RangeInclusive<usize> {
-        10..=50000
+        10..=200000
     }
     
     pub fn get_max_speed_range() -> std::ops::RangeInclusive<f32> {
@@ -160,15 +160,15 @@ impl SimulationParams {
     }
     
     pub fn get_radius_range() -> std::ops::RangeInclusive<f32> {
-        5.0..=100.0
+        5.0..=200.0
     }
     
     pub fn get_world_size_range() -> std::ops::RangeInclusive<f32> {
-        1000.0..=10000.0
+        1000.0..=50000.0
     }
     
     pub fn get_cell_size_factor_range() -> std::ops::RangeInclusive<f32> {
-        0.5..=2.0
+        0.01..=2.0
     }
     
     pub fn get_physics_fps_range() -> std::ops::RangeInclusive<f32> {
