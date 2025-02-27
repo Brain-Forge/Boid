@@ -14,7 +14,6 @@ use nannou::prelude::*;
 
 use crate::app::Model;
 use crate::boid::Boid;
-use crate::WORLD_SIZE;
 
 // Efficient function to get visible boids using the best available method
 pub fn get_visible_boids(model: &Model, visible_area: Rect) -> Vec<usize> {
@@ -94,7 +93,7 @@ pub fn cull_with_spatial_grid(model: &Model, visible_area: Rect) -> Vec<usize> {
     }
     
     // Convert visible area to grid cells
-    let half_world = WORLD_SIZE / 2.0;
+    let half_world = model.params.world_size / 2.0;
     let cell_size = model.spatial_grid.cell_size;
     let grid_size = model.spatial_grid.grid_size;
     
@@ -124,30 +123,33 @@ pub fn cull_with_spatial_grid(model: &Model, visible_area: Rect) -> Vec<usize> {
             // Add all boids in this cell
             if cell_index < model.spatial_grid.grid.len() {
                 for &boid_index in &model.spatial_grid.grid[cell_index] {
+                    // Safety check: ensure boid_index is valid
+                    if boid_index >= model.boids.len() {
+                        continue;
+                    }
+                    
                     // Skip if already marked as visible
                     if model.boids[boid_index].is_visible {
                         continue;
                     }
                     
                     // For cells at the boundary, we need to check if the boid is actually visible
-                    if boid_index < model.boids.len() {
-                        let is_visible = if model.params.enable_interpolation {
-                            let interpolated_pos = model.boids[boid_index].get_interpolated_position(model.interpolation_alpha);
-                            let pos = Vec2::new(interpolated_pos.x, interpolated_pos.y);
-                            visible_area.contains(pos)
-                        } else {
-                            let pos = Vec2::new(model.boids[boid_index].position.x, model.boids[boid_index].position.y);
-                            visible_area.contains(pos)
-                        };
+                    let is_visible = if model.params.enable_interpolation {
+                        let interpolated_pos = model.boids[boid_index].get_interpolated_position(model.interpolation_alpha);
+                        let pos = Vec2::new(interpolated_pos.x, interpolated_pos.y);
+                        visible_area.contains(pos)
+                    } else {
+                        let pos = Vec2::new(model.boids[boid_index].position.x, model.boids[boid_index].position.y);
+                        visible_area.contains(pos)
+                    };
+                    
+                    if is_visible {
+                        visible_indices.push(boid_index);
                         
-                        if is_visible {
-                            visible_indices.push(boid_index);
-                            
-                            // Mark as visible
-                            unsafe {
-                                let boid_ptr = &model.boids[boid_index] as *const Boid as *mut Boid;
-                                (*boid_ptr).is_visible = true;
-                            }
+                        // Mark as visible
+                        unsafe {
+                            let boid_ptr = &model.boids[boid_index] as *const Boid as *mut Boid;
+                            (*boid_ptr).is_visible = true;
                         }
                     }
                 }

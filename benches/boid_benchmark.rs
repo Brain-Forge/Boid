@@ -15,6 +15,9 @@ use std::time::Duration;
 // This is a placeholder - you'll need to modify main.rs to expose these types
 // extern crate boids;
 
+// Define a consistent world size for benchmarks
+const BENCHMARK_WORLD_SIZE: f32 = 5000.0;
+
 // Benchmark the spatial grid operations
 fn bench_spatial_grid(c: &mut Criterion) {
     let mut group = c.benchmark_group("spatial_grid");
@@ -25,7 +28,7 @@ fn bench_spatial_grid(c: &mut Criterion) {
             // Setup code here - create boids and spatial grid
             // This is a placeholder - you'll need to modify this to use your actual types
             let mut rng = rand::thread_rng();
-            let world_size = 5000.0;
+            let world_size = BENCHMARK_WORLD_SIZE;
             
             // Create boids with random positions
             let boids: Vec<(f32, f32)> = (0..n)
@@ -57,7 +60,7 @@ fn bench_force_calculations(c: &mut Criterion) {
             // Setup code here - create boids
             // This is a placeholder - you'll need to modify this to use your actual types
             let mut rng = rand::thread_rng();
-            let world_size = 5000.0;
+            let world_size = BENCHMARK_WORLD_SIZE;
             
             // Create boids with random positions
             let boids: Vec<(f32, f32)> = (0..n)
@@ -79,17 +82,17 @@ fn bench_force_calculations(c: &mut Criterion) {
     group.finish();
 }
 
-// Benchmark the overall update loop
+// Benchmark the entire update loop
 fn bench_update_loop(c: &mut Criterion) {
     let mut group = c.benchmark_group("update_loop");
     
     // Benchmark different numbers of boids
     for num_boids in [100, 500, 1000, 2000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(num_boids), num_boids, |b, &n| {
-            // Setup code here - create model
+            // Setup code here - create the entire simulation state
             // This is a placeholder - you'll need to modify this to use your actual types
             let mut rng = rand::thread_rng();
-            let world_size = 5000.0;
+            let world_size = BENCHMARK_WORLD_SIZE;
             
             // Create boids with random positions
             let boids: Vec<(f32, f32)> = (0..n)
@@ -101,7 +104,7 @@ fn bench_update_loop(c: &mut Criterion) {
                 .collect();
             
             b.iter(|| {
-                // Benchmark the update loop
+                // Benchmark the entire update loop
                 // This is a placeholder - you'll need to modify this to use your actual code
                 black_box(boids.clone());
             });

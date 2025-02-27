@@ -28,4 +28,4 @@ pub mod input;
 
 // Constants
 pub const BOID_SIZE: f32 = 6.0;
-pub const WORLD_SIZE: f32 = 5000.0; 
+// WORLD_SIZE constant removed as it's now a parameter in SimulationParams 

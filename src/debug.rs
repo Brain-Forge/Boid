@@ -1,33 +1,26 @@
 /*
- * Debug Information Module
+ * Debug Module
  * 
- * This module defines the DebugInfo struct that contains performance metrics
- * and other debug information to be displayed in the UI.
- * 
- * Includes metrics for:
- * - FPS (frames per second)
- * - Frame time
- * - Number of visible boids
- * - Parallel processing chunk size
- * - Culling efficiency metrics
- * - Boid selection and camera following status
+ * This module provides debugging information and metrics for the boid simulation.
+ * It tracks performance statistics, rendering information, and simulation state
+ * to help with optimization and debugging.
  */
 
+use nannou::prelude::*;
 use std::time::Duration;
-use std::sync::{Arc, Mutex};
 
-// Debug information to display
+// Debug information for the simulation
 pub struct DebugInfo {
     pub fps: f32,
     pub frame_time: Duration,
-    pub visible_boids: Arc<Mutex<usize>>,
-    pub chunk_size: usize,
-    pub physics_updates_per_frame: usize,
-    pub interpolation_alpha: f32,
-    pub culling_efficiency: Arc<Mutex<f32>>,
-    pub frustum_area_ratio: Arc<Mutex<f32>>,
+    pub physics_updates_per_frame: Option<usize>,
+    pub interpolation_alpha: Option<f32>,
+    pub visible_boids_count: Option<usize>,
+    pub chunk_size: Option<usize>,
     pub selected_boid_index: Option<usize>,
     pub follow_mode_active: bool,
+    pub culling_efficiency: Option<f32>,
+    pub frustum_area_ratio: Option<f32>,
 }
 
 impl Default for DebugInfo {
@@ -35,14 +28,58 @@ impl Default for DebugInfo {
         Self {
             fps: 0.0,
             frame_time: Duration::ZERO,
-            visible_boids: Arc::new(Mutex::new(0)),
-            chunk_size: 0,
-            physics_updates_per_frame: 0,
-            interpolation_alpha: 0.0,
-            culling_efficiency: Arc::new(Mutex::new(0.0)),
-            frustum_area_ratio: Arc::new(Mutex::new(0.0)),
+            physics_updates_per_frame: None,
+            interpolation_alpha: None,
+            visible_boids_count: None,
+            chunk_size: None,
             selected_boid_index: None,
             follow_mode_active: false,
+            culling_efficiency: None,
+            frustum_area_ratio: None,
+        }
+    }
+}
+
+impl DebugInfo {
+    // Update debug information from the model
+    pub fn update_from_app(&mut self, app: &App) {
+        // Basic performance metrics
+        self.fps = app.fps();
+        self.frame_time = app.duration.since_prev_update;
+    }
+    
+    // Update debug information from model fields
+    pub fn update_from_model(&mut self, 
+                            selected_boid_index: Option<usize>,
+                            follow_mode_active: bool,
+                            interpolation_alpha: f32,
+                            cached_visible_boids: &Option<Vec<usize>>,
+                            boids_len: usize,
+                            visible_area_cache: Option<Rect>,
+                            world_size: f32) {
+        // Boid selection and camera state
+        self.selected_boid_index = selected_boid_index;
+        self.follow_mode_active = follow_mode_active;
+        
+        // Interpolation state
+        self.interpolation_alpha = Some(interpolation_alpha);
+        
+        // Calculate visible boids count
+        if let Some(visible_boids) = cached_visible_boids {
+            self.visible_boids_count = Some(visible_boids.len());
+            
+            // Calculate culling efficiency (percentage of boids culled)
+            if boids_len > 0 {
+                let culling_efficiency = 100.0 * (1.0 - (visible_boids.len() as f32 / boids_len as f32));
+                self.culling_efficiency = Some(culling_efficiency);
+            }
+        }
+        
+        // Calculate frustum area ratio if we have a visible area
+        if let Some(visible_area) = visible_area_cache {
+            let visible_area_size = visible_area.w() * visible_area.h();
+            let world_area = world_size * world_size;
+            self.frustum_area_ratio = Some(visible_area_size / world_area);
         }
     }
 } 

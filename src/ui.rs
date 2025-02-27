@@ -66,6 +66,11 @@ pub fn update_ui(app: &App, model: &mut Model, update: &Update) -> UiResponse {
                 .text("Max Speed")
                 .clamp_to_range(true));
             
+            // World size slider
+            ui.add(egui::Slider::new(&mut model.params.world_size, SimulationParams::get_world_size_range())
+                .text("World Size")
+                .clamp_to_range(true));
+            
             // Reset button removed
             
             ui.separator();

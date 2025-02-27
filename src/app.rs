@@ -27,7 +27,6 @@ use crate::physics;
 use crate::renderer;
 use crate::input;
 use crate::ui;
-use crate::WORLD_SIZE;
 
 // Main model for the application
 pub struct Model {
@@ -100,24 +99,35 @@ pub fn model(app: &App) -> Model {
         params.separation_radius,
         f32::max(params.alignment_radius, params.cohesion_radius)
     );
+    
+    // Use cell size factor to determine cell size
     let cell_size = max_radius * params.cell_size_factor;
-    let spatial_grid = SpatialGrid::new(cell_size, WORLD_SIZE);
+    
+    // Create spatial grid with the world size from params
+    let spatial_grid = SpatialGrid::new(cell_size, params.world_size);
     
     // Create boids
     let mut boids = Vec::with_capacity(params.num_boids);
     let mut rng = rand::thread_rng();
     
+    // Create boids with random positions within the world bounds
     for _ in 0..params.num_boids {
-        let x = rng.gen_range((-WORLD_SIZE / 2.0)..(WORLD_SIZE / 2.0));
-        let y = rng.gen_range((-WORLD_SIZE / 2.0)..(WORLD_SIZE / 2.0));
+        let half_world = params.world_size / 2.0;
+        let x = rng.gen_range(-half_world..half_world);
+        let y = rng.gen_range(-half_world..half_world);
         boids.push(Boid::new(x, y));
     }
     
-    // Set fixed physics step size based on FPS
+    // Set max speed for all boids
+    for boid in &mut boids {
+        boid.max_speed = params.max_speed;
+    }
+    
+    // Calculate physics step size based on fixed FPS
     let physics_step_size = Duration::from_secs_f32(1.0 / params.fixed_physics_fps);
     
     // Create the model
-    Model {
+    let mut model = Model {
         boids,
         params,
         egui,
@@ -128,7 +138,7 @@ pub fn model(app: &App) -> Model {
         cached_visible_boids: UnsafeCell::new(None),
         render_needed: UnsafeCell::new(true),
         _last_camera_state: None,
-        physics_accumulator: Duration::ZERO,
+        physics_accumulator: Duration::from_secs(0),
         physics_step_size,
         last_update_time: Instant::now(),
         interpolation_alpha: 0.0,
@@ -137,7 +147,12 @@ pub fn model(app: &App) -> Model {
         selected_boid_index: None,
         last_cell_size_update: Instant::now(),
         cell_size_update_interval: Duration::from_secs(1), // Update cell size every second
-    }
+    };
+    
+    // Take initial snapshot of parameters
+    model.params.take_snapshot();
+    
+    model
 }
 
 // Update the model
@@ -145,21 +160,50 @@ pub fn update(app: &App, model: &mut Model, update: Update) {
     // Update the UI
     let ui_response = ui::update_ui(app, model, &update);
     
-    // Check for parameter changes
-    let (boids_changed, _physics_changed, rendering_changed) = model.params.detect_changes();
+    // Detect parameter changes
+    let (boids_changed, physics_changed, rendering_changed, world_size_changed) = model.params.detect_changes();
     
-    // Take a snapshot of current parameters for future change detection
-    model.params.take_snapshot();
-    
-    // Reset boids if needed
+    // Handle parameter changes
     if boids_changed {
+        // Reset boids if the number has changed
         physics::reset_boids(model);
     }
     
-    // Update physics step size if FPS changed
-    if rendering_changed {
+    if physics_changed || world_size_changed {
+        // Update max speed for all boids if it changed
+        for boid in &mut model.boids {
+            boid.max_speed = model.params.max_speed;
+        }
+        
+        // Update physics step size if FPS changed
         model.physics_step_size = Duration::from_secs_f32(1.0 / model.params.fixed_physics_fps);
     }
+    
+    // If world size changed, we need to recreate the spatial grid
+    if world_size_changed {
+        // Recalculate cell size
+        let max_radius = f32::max(
+            model.params.separation_radius,
+            f32::max(model.params.alignment_radius, model.params.cohesion_radius)
+        );
+        let cell_size = max_radius * model.params.cell_size_factor;
+        
+        // Create new spatial grid with updated world size
+        model.spatial_grid = SpatialGrid::new(cell_size, model.params.world_size);
+        
+        // Ensure all boids are within the new world bounds
+        let half_world = model.params.world_size / 2.0;
+        for boid in &mut model.boids {
+            // Wrap boids that are outside the new world bounds
+            if boid.position.x > half_world || boid.position.x < -half_world ||
+               boid.position.y > half_world || boid.position.y < -half_world {
+                boid.wrap_edges(model.params.world_size);
+            }
+        }
+    }
+    
+    // Take a snapshot of the current parameters for change detection in the next frame
+    model.params.take_snapshot();
     
     // Skip physics updates if paused
     if !model.params.pause_simulation {
@@ -239,7 +283,7 @@ pub fn update(app: &App, model: &mut Model, update: Update) {
             cached_visible_boids,
             model.boids.len(),
             model.visible_area_cache,
-            WORLD_SIZE
+            model.params.world_size
         );
     }
     
@@ -278,7 +322,7 @@ fn update_adaptive_cell_size(model: &mut Model) {
         let nearby = model.spatial_grid.get_nearby_with_distances(
             model.boids[i].position,
             &boid_positions,
-            WORLD_SIZE
+            model.params.world_size
         );
         
         total_neighbors += nearby.len();
@@ -307,6 +351,6 @@ fn update_adaptive_cell_size(model: &mut Model) {
     
     // Only recreate grid if cell size changed significantly
     if (new_cell_size - current_cell_size).abs() > current_cell_size * 0.1 {
-        model.spatial_grid = SpatialGrid::new(new_cell_size, WORLD_SIZE);
+        model.spatial_grid = SpatialGrid::new(new_cell_size, model.params.world_size);
     }
 } 

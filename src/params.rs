@@ -19,6 +19,7 @@ pub struct SimulationParams {
     pub alignment_radius: f32,
     pub cohesion_radius: f32,
     pub max_speed: f32,
+    pub world_size: f32,  // Added world size parameter
     pub show_debug: bool,
     pub pause_simulation: bool,
     // Performance settings
@@ -47,6 +48,7 @@ struct ParamSnapshot {
     alignment_radius: f32,
     cohesion_radius: f32,
     max_speed: f32,
+    world_size: f32,  // Added world size parameter
     show_debug: bool,
     enable_squared_distance: bool,
     enable_frustum_culling: bool,
@@ -67,12 +69,13 @@ impl Default for SimulationParams {
             alignment_radius: 50.0,
             cohesion_radius: 50.0,
             max_speed: 4.0,
+            world_size: 5000.0, // Default world size (same as the constant)
             show_debug: false,
             pause_simulation: false,
             // Default performance settings
             enable_parallel: true,
             enable_spatial_grid: true,
-            cell_size_factor: 1.2, // Slightly larger cells to ensure all neighbors are captured
+            cell_size_factor: 0.5, // Changed from 1.2 to 0.5 for smaller cells
             enable_squared_distance: true, // Enable by default for better performance
             enable_frustum_culling: true,  // Enable frustum culling by default
             adaptive_cell_sizing: true,    // Enable adaptive cell sizing by default
@@ -98,6 +101,7 @@ impl SimulationParams {
             alignment_radius: self.alignment_radius,
             cohesion_radius: self.cohesion_radius,
             max_speed: self.max_speed,
+            world_size: self.world_size,  // Added world size parameter
             show_debug: self.show_debug,
             enable_squared_distance: self.enable_squared_distance,
             enable_frustum_culling: self.enable_frustum_culling,
@@ -109,8 +113,8 @@ impl SimulationParams {
     }
     
     // Detect changes in parameters and return flags for different types of changes
-    // Returns (boids_changed, physics_changed, rendering_changed)
-    pub fn detect_changes(&self) -> (bool, bool, bool) {
+    // Returns (boids_changed, physics_changed, rendering_changed, world_size_changed)
+    pub fn detect_changes(&self) -> (bool, bool, bool, bool) {
         if let Some(prev) = &self.previous_values {
             let boids_changed = self.num_boids != prev.num_boids;
             
@@ -132,10 +136,12 @@ impl SimulationParams {
                 self.target_render_fps != prev.target_render_fps ||
                 self.enable_interpolation != prev.enable_interpolation;
             
-            (boids_changed, physics_changed, rendering_changed)
+            let world_size_changed = self.world_size != prev.world_size;
+            
+            (boids_changed, physics_changed, rendering_changed, world_size_changed)
         } else {
             // If no previous values, consider everything changed
-            (true, true, true)
+            (true, true, true, true)
         }
     }
     
@@ -155,6 +161,10 @@ impl SimulationParams {
     
     pub fn get_radius_range() -> std::ops::RangeInclusive<f32> {
         5.0..=100.0
+    }
+    
+    pub fn get_world_size_range() -> std::ops::RangeInclusive<f32> {
+        1000.0..=10000.0
     }
     
     pub fn get_cell_size_factor_range() -> std::ops::RangeInclusive<f32> {

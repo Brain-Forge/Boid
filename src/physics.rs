@@ -10,6 +10,8 @@
  * - Combining forces before applying them to reduce vector operations
  * - Using squared distances where possible
  * - Parallel processing for large numbers of boids
+ * - Optimized world wrapping with efficient distance calculations
+ * - Adaptive cell sizing based on perception radii
  */
 
 use nannou::prelude::*;
@@ -19,7 +21,6 @@ use rayon::prelude::*;
 use crate::app::Model;
 use crate::boid::Boid;
 use crate::spatial_grid::SpatialGrid;
-use crate::WORLD_SIZE;
 
 // Reset boids to random positions
 pub fn reset_boids(model: &mut Model) {
@@ -27,9 +28,10 @@ pub fn reset_boids(model: &mut Model) {
     
     // Resize the boids vector if needed
     model.boids.resize_with(model.params.num_boids, || {
-        // Use the world size for boid positioning
-        let x = rng.gen_range((-WORLD_SIZE / 2.0)..(WORLD_SIZE / 2.0));
-        let y = rng.gen_range((-WORLD_SIZE / 2.0)..(WORLD_SIZE / 2.0));
+        // Use the world size from params for boid positioning
+        let half_world = model.params.world_size / 2.0;
+        let x = rng.gen_range(-half_world..half_world);
+        let y = rng.gen_range(-half_world..half_world);
         Boid::new(x, y)
     });
     
@@ -62,15 +64,20 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
     
     // Recreate grid if perception radii have changed significantly
     if (cell_size - model.spatial_grid.cell_size).abs() > 5.0 {
-        model.spatial_grid = SpatialGrid::new(cell_size, WORLD_SIZE);
+        model.spatial_grid = SpatialGrid::new(cell_size, model.params.world_size);
+    }
+    
+    // Store previous state for interpolation
+    for boid in &mut model.boids {
+        boid.store_previous_state();
     }
     
     // Clear the spatial grid
     model.spatial_grid.clear();
     
-    // Add boids to the spatial grid
+    // Insert all boids into the spatial grid
     for (i, boid) in model.boids.iter().enumerate() {
-        model.spatial_grid.insert(i, boid.position, WORLD_SIZE);
+        model.spatial_grid.insert(i, boid.position, model.params.world_size);
     }
     
     // Pre-calculate weights to avoid multiplication in the inner loop
@@ -97,7 +104,7 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
             let nearby_with_distances = model.spatial_grid.get_nearby_with_distances(
                 boid.position, 
                 &boid_positions, 
-                WORLD_SIZE
+                model.params.world_size
             );
             
             // Clone the data to avoid borrowing issues
@@ -112,7 +119,9 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
         
         // Update debug info with chunk size if debug is enabled
         if model.params.show_debug {
-            model.debug_info.chunk_size = chunk_size;
+            unsafe {
+                (*model.debug_info.get()).chunk_size = Some(chunk_size);
+            }
         }
         
         model.boids.par_chunks_mut(chunk_size).enumerate().for_each(|(chunk_idx, boid_chunk)| {
@@ -144,12 +153,26 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
                         let dx = boid.position.x - boid_positions[other_idx].x;
                         let dy = boid.position.y - boid_positions[other_idx].y;
                         
+                        // Handle wrapping for separation vector
+                        let half_world = model.params.world_size / 2.0;
+                        let mut wrapped_dx = dx;
+                        let mut wrapped_dy = dy;
+                        
+                        // Check if wrapping around provides a shorter path
+                        if dx.abs() > half_world {
+                            wrapped_dx = if dx > 0.0 { dx - model.params.world_size } else { dx + model.params.world_size };
+                        }
+                        
+                        if dy.abs() > half_world {
+                            wrapped_dy = if dy > 0.0 { dy - model.params.world_size } else { dy + model.params.world_size };
+                        }
+                        
                         // Only calculate actual distance if needed for weighting
                         let d = d_squared.sqrt();
                         
                         // Weight by distance (closer boids have more influence)
-                        separation.x += (dx / d) / d;
-                        separation.y += (dy / d) / d;
+                        separation.x += (wrapped_dx / d) / d;
+                        separation.y += (wrapped_dy / d) / d;
                         sep_count += 1;
                     }
                     
@@ -161,8 +184,27 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
                     
                     // Cohesion
                     if d_squared < cohesion_radius_sq {
-                        cohesion.x += boid_positions[other_idx].x;
-                        cohesion.y += boid_positions[other_idx].y;
+                        // Handle wrapping for cohesion target
+                        let other_pos = boid_positions[other_idx];
+                        let half_world = model.params.world_size / 2.0;
+                        let mut target_x = other_pos.x;
+                        let mut target_y = other_pos.y;
+                        
+                        // Calculate direct distance components
+                        let dx = boid.position.x - other_pos.x;
+                        let dy = boid.position.y - other_pos.y;
+                        
+                        // Check if wrapping around provides a shorter path
+                        if dx.abs() > half_world {
+                            target_x += if dx > 0.0 { model.params.world_size } else { -model.params.world_size };
+                        }
+                        
+                        if dy.abs() > half_world {
+                            target_y += if dy > 0.0 { model.params.world_size } else { -model.params.world_size };
+                        }
+                        
+                        cohesion.x += target_x;
+                        cohesion.y += target_y;
                         cohesion_count += 1;
                     }
                 }
@@ -215,34 +257,34 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
                 
                 // Process cohesion
                 if cohesion_count > 0 {
-                    cohesion /= cohesion_count as f32;
+                    cohesion.x /= cohesion_count as f32;
+                    cohesion.y /= cohesion_count as f32;
                     
-                    // Create desired velocity towards target
-                    let desired = cohesion - Vec2::new(boid.position.x, boid.position.y);
+                    // Calculate steering vector towards center
+                    let cohesion_target = pt2(cohesion.x, cohesion.y);
+                    let desired = cohesion_target - boid.position;
                     
                     let desired_length_squared = desired.length_squared();
                     if desired_length_squared > 0.0 {
-                        // Scale to maximum speed (only normalize if needed)
+                        // Scale to maximum speed
                         let desired_length = desired_length_squared.sqrt();
                         let desired_normalized = desired * (boid.max_speed / desired_length);
                         
-                        // Implement Reynolds: Steering = Desired - Velocity
-                        let mut steering = desired_normalized - boid.velocity;
+                        // Steering = Desired - Velocity
+                        cohesion = desired_normalized - boid.velocity;
                         
                         // Limit force
-                        let force_squared = steering.length_squared();
+                        let force_squared = cohesion.length_squared();
                         let max_force_squared = boid.max_force * boid.max_force;
                         
                         if force_squared > max_force_squared {
                             let force_length = force_squared.sqrt();
-                            steering *= boid.max_force / force_length;
+                            cohesion *= boid.max_force / force_length;
                         }
-                        
-                        cohesion = steering;
                     }
                 }
                 
-                // Combine forces with weights
+                // Combine forces with weights (avoid creating intermediate vectors)
                 let mut combined_force = Vec2::ZERO;
                 combined_force.x = separation.x * separation_weight + alignment.x * alignment_weight + cohesion.x * cohesion_weight;
                 combined_force.y = separation.y * separation_weight + alignment.y * alignment_weight + cohesion.y * cohesion_weight;
@@ -254,16 +296,18 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
                 boid.update();
                 
                 // Wrap around edges
-                boid.wrap_edges(WORLD_SIZE);
+                boid.wrap_edges(model.params.world_size);
             }
         });
     } else {
-        // Sequential processing for better cache locality
-        for i in 0..model.boids.len() {
-            let boid_position = model.boids[i].position;
-            
+        // Sequential processing for when parallel is disabled
+        for boid in &mut model.boids {
             // Get nearby boids with pre-computed distances
-            let nearby_with_distances = model.spatial_grid.get_nearby_with_distances(boid_position, &boid_positions, WORLD_SIZE);
+            let nearby_with_distances = model.spatial_grid.get_nearby_with_distances(
+                boid.position, 
+                &boid_positions, 
+                model.params.world_size
+            );
             
             // Calculate forces
             let mut separation = Vec2::ZERO;
@@ -274,22 +318,36 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
             let mut cohesion_count = 0;
             
             // Process all neighbors in a single pass
-            for neighbor in nearby_with_distances {
-                let other_idx = neighbor.index;
+            for &neighbor in nearby_with_distances {
                 let d_squared = neighbor.distance_squared;
+                let other_idx = neighbor.index;
                 
                 // Separation
                 if d_squared < sep_radius_sq {
                     // Calculate vector pointing away from neighbor
-                    let dx = boid_position.x - boid_positions[other_idx].x;
-                    let dy = boid_position.y - boid_positions[other_idx].y;
+                    let dx = boid.position.x - boid_positions[other_idx].x;
+                    let dy = boid.position.y - boid_positions[other_idx].y;
+                    
+                    // Handle wrapping for separation vector
+                    let half_world = model.params.world_size / 2.0;
+                    let mut wrapped_dx = dx;
+                    let mut wrapped_dy = dy;
+                    
+                    // Check if wrapping around provides a shorter path
+                    if dx.abs() > half_world {
+                        wrapped_dx = if dx > 0.0 { dx - model.params.world_size } else { dx + model.params.world_size };
+                    }
+                    
+                    if dy.abs() > half_world {
+                        wrapped_dy = if dy > 0.0 { dy - model.params.world_size } else { dy + model.params.world_size };
+                    }
                     
                     // Only calculate actual distance if needed for weighting
                     let d = d_squared.sqrt();
                     
                     // Weight by distance (closer boids have more influence)
-                    separation.x += (dx / d) / d;
-                    separation.y += (dy / d) / d;
+                    separation.x += (wrapped_dx / d) / d;
+                    separation.y += (wrapped_dy / d) / d;
                     sep_count += 1;
                 }
                 
@@ -301,8 +359,27 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
                 
                 // Cohesion
                 if d_squared < cohesion_radius_sq {
-                    cohesion.x += boid_positions[other_idx].x;
-                    cohesion.y += boid_positions[other_idx].y;
+                    // Handle wrapping for cohesion target
+                    let other_pos = boid_positions[other_idx];
+                    let half_world = model.params.world_size / 2.0;
+                    let mut target_x = other_pos.x;
+                    let mut target_y = other_pos.y;
+                    
+                    // Calculate direct distance components
+                    let dx = boid.position.x - other_pos.x;
+                    let dy = boid.position.y - other_pos.y;
+                    
+                    // Check if wrapping around provides a shorter path
+                    if dx.abs() > half_world {
+                        target_x += if dx > 0.0 { model.params.world_size } else { -model.params.world_size };
+                    }
+                    
+                    if dy.abs() > half_world {
+                        target_y += if dy > 0.0 { model.params.world_size } else { -model.params.world_size };
+                    }
+                    
+                    cohesion.x += target_x;
+                    cohesion.y += target_y;
                     cohesion_count += 1;
                 }
             }
@@ -315,17 +392,17 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
                 if separation_length_squared > 0.0 {
                     // Implement Reynolds: Steering = Desired - Velocity
                     let separation_length = separation_length_squared.sqrt();
-                    let desired = separation * (model.boids[i].max_speed / separation_length);
+                    let desired = separation * (boid.max_speed / separation_length);
                     
-                    separation = desired - model.boids[i].velocity;
+                    separation = desired - boid.velocity;
                     
                     // Limit force
                     let force_squared = separation.length_squared();
-                    let max_force_squared = model.boids[i].max_force * model.boids[i].max_force;
+                    let max_force_squared = boid.max_force * boid.max_force;
                     
                     if force_squared > max_force_squared {
                         let force_length = force_squared.sqrt();
-                        separation *= model.boids[i].max_force / force_length;
+                        separation *= boid.max_force / force_length;
                     }
                 }
             }
@@ -338,64 +415,69 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
                 if alignment_length_squared > 0.0 {
                     // Implement Reynolds: Steering = Desired - Velocity
                     let alignment_length = alignment_length_squared.sqrt();
-                    let desired = alignment * (model.boids[i].max_speed / alignment_length);
+                    let desired = alignment * (boid.max_speed / alignment_length);
                     
-                    alignment = desired - model.boids[i].velocity;
+                    alignment = desired - boid.velocity;
                     
                     // Limit force
                     let force_squared = alignment.length_squared();
-                    let max_force_squared = model.boids[i].max_force * model.boids[i].max_force;
+                    let max_force_squared = boid.max_force * boid.max_force;
                     
                     if force_squared > max_force_squared {
                         let force_length = force_squared.sqrt();
-                        alignment *= model.boids[i].max_force / force_length;
+                        alignment *= boid.max_force / force_length;
                     }
                 }
             }
             
             // Process cohesion
             if cohesion_count > 0 {
-                cohesion /= cohesion_count as f32;
+                cohesion.x /= cohesion_count as f32;
+                cohesion.y /= cohesion_count as f32;
                 
-                // Create desired velocity towards target
-                let desired = cohesion - Vec2::new(boid_position.x, boid_position.y);
+                // Calculate steering vector towards center
+                let cohesion_target = pt2(cohesion.x, cohesion.y);
+                let desired = cohesion_target - boid.position;
                 
                 let desired_length_squared = desired.length_squared();
                 if desired_length_squared > 0.0 {
-                    // Scale to maximum speed (only normalize if needed)
+                    // Scale to maximum speed
                     let desired_length = desired_length_squared.sqrt();
-                    let desired_normalized = desired * (model.boids[i].max_speed / desired_length);
+                    let desired_normalized = desired * (boid.max_speed / desired_length);
                     
-                    // Implement Reynolds: Steering = Desired - Velocity
-                    let mut steering = desired_normalized - model.boids[i].velocity;
+                    // Steering = Desired - Velocity
+                    cohesion = desired_normalized - boid.velocity;
                     
                     // Limit force
-                    let force_squared = steering.length_squared();
-                    let max_force_squared = model.boids[i].max_force * model.boids[i].max_force;
+                    let force_squared = cohesion.length_squared();
+                    let max_force_squared = boid.max_force * boid.max_force;
                     
                     if force_squared > max_force_squared {
                         let force_length = force_squared.sqrt();
-                        steering *= model.boids[i].max_force / force_length;
+                        cohesion *= boid.max_force / force_length;
                     }
-                    
-                    cohesion = steering;
                 }
             }
             
-            // Combine forces with weights
+            // Combine forces with weights (avoid creating intermediate vectors)
             let mut combined_force = Vec2::ZERO;
             combined_force.x = separation.x * separation_weight + alignment.x * alignment_weight + cohesion.x * cohesion_weight;
             combined_force.y = separation.y * separation_weight + alignment.y * alignment_weight + cohesion.y * cohesion_weight;
             
             // Apply the calculated acceleration
-            model.boids[i].apply_force(combined_force);
+            boid.apply_force(combined_force);
             
             // Update position
-            model.boids[i].update();
+            boid.update();
             
             // Wrap around edges
-            model.boids[i].wrap_edges(WORLD_SIZE);
+            boid.wrap_edges(model.params.world_size);
         }
+    }
+    
+    // Wrap boids around the edges of the world
+    for boid in &mut model.boids {
+        boid.wrap_edges(model.params.world_size);
     }
 }
 
@@ -416,7 +498,9 @@ fn update_boids_without_spatial_grid(model: &mut Model) {
         
         // Update debug info with chunk size if debug is enabled
         if model.params.show_debug {
-            model.debug_info.chunk_size = chunk_size;
+            unsafe {
+                (*model.debug_info.get()).chunk_size = Some(chunk_size);
+            }
         }
         
         // Process boids in parallel chunks to reduce synchronization overhead
@@ -439,7 +523,7 @@ fn update_boids_without_spatial_grid(model: &mut Model) {
                 boid.update();
                 
                 // Wrap around edges
-                boid.wrap_edges(WORLD_SIZE);
+                boid.wrap_edges(model.params.world_size);
             }
         });
     } else {
@@ -462,7 +546,7 @@ fn update_boids_without_spatial_grid(model: &mut Model) {
             boid.update();
             
             // Wrap around edges
-            boid.wrap_edges(WORLD_SIZE);
+            boid.wrap_edges(model.params.world_size);
         }
     }
 } 

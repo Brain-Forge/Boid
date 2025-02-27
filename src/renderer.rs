@@ -15,7 +15,6 @@ use nannou::prelude::*;
 use crate::app::Model;
 use crate::culling;
 use crate::ui;
-use crate::WORLD_SIZE;
 
 // Render the model
 pub fn view(app: &App, model: &Model, frame: Frame) {
@@ -37,8 +36,9 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
     let window_rect = app.window_rect();
     
     // Draw world boundary to show the simulation limits
-    let world_top_left = model.camera.world_to_screen(vec2(-WORLD_SIZE/2.0, -WORLD_SIZE/2.0), window_rect);
-    let world_bottom_right = model.camera.world_to_screen(vec2(WORLD_SIZE/2.0, WORLD_SIZE/2.0), window_rect);
+    let world_size = model.params.world_size;
+    let world_top_left = model.camera.world_to_screen(vec2(-world_size/2.0, -world_size/2.0), window_rect);
+    let world_bottom_right = model.camera.world_to_screen(vec2(world_size/2.0, world_size/2.0), window_rect);
     
     let world_rect = Rect::from_corners(
         pt2(world_top_left.x, world_top_left.y),
@@ -50,7 +50,7 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
         .wh(world_rect.wh())
         .no_fill()
         .stroke_weight(1.0)
-        .stroke(rgba(0.3, 0.3, 0.3, 1.0));
+        .stroke(GRAY);
     
     // Calculate the visible area in world space for culling
     let visible_area = Rect::from_corners(
@@ -73,12 +73,13 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
     
     // Calculate frustum area ratio for debug info
     if model.params.show_debug {
-        let world_area = WORLD_SIZE * WORLD_SIZE;
+        let world_area = world_size * world_size;
         let frustum_area = visible_area_with_margin.w() * visible_area_with_margin.h();
         let area_ratio = frustum_area / world_area;
         
-        let mut frustum_area_ratio = model.debug_info.frustum_area_ratio.lock().unwrap();
-        *frustum_area_ratio = area_ratio;
+        unsafe {
+            (*model.debug_info.get()).frustum_area_ratio = Some(area_ratio);
+        }
     }
     
     // Get visible boids based on culling settings
@@ -96,14 +97,14 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
         let total_count = model.boids.len();
         
         // Update visible boid count
-        let mut visible_boids_count = model.debug_info.visible_boids.lock().unwrap();
-        *visible_boids_count = visible_count;
-        
-        // Calculate and update culling efficiency
-        if total_count > 0 {
-            let efficiency = (1.0 - (visible_count as f32 / total_count as f32)) * 100.0;
-            let mut culling_efficiency = model.debug_info.culling_efficiency.lock().unwrap();
-            *culling_efficiency = efficiency;
+        unsafe {
+            (*model.debug_info.get()).visible_boids_count = Some(visible_count);
+            
+            // Calculate and update culling efficiency
+            if total_count > 0 {
+                let efficiency = (1.0 - (visible_count as f32 / total_count as f32)) * 100.0;
+                (*model.debug_info.get()).culling_efficiency = Some(efficiency);
+            }
         }
     }
     
@@ -200,9 +201,6 @@ pub fn view(app: &App, model: &Model, frame: Frame) {
                     .stroke_weight(2.0);
             }
         }
-        
-        // Draw debug info
-        ui::draw_debug_info(&draw, &model.debug_info, window_rect, model.boids.len(), model.camera.zoom, WORLD_SIZE);
     }
     
     // Finish drawing

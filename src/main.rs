@@ -33,7 +33,6 @@ mod input;
 
 // Re-export constants
 pub const BOID_SIZE: f32 = 6.0;
-pub const WORLD_SIZE: f32 = 5000.0;
 
 fn main() {
     nannou::app(app::model)
