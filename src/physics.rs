@@ -80,6 +80,24 @@ fn update_boids_with_spatial_grid(model: &mut Model) {
         model.spatial_grid.insert(i, boid.position, model.params.world_size);
     }
     
+    // Update spatial grid statistics for adaptive optimizations
+    model.spatial_grid.update_statistics();
+    
+    // Update debug info with grid statistics if debug is enabled
+    if model.params.show_debug {
+        let (occupied_cells, total_cells, occupancy_percentage, max_cell_population) = 
+            model.spatial_grid.get_statistics();
+        
+        unsafe {
+            (*model.debug_info.get()).update_grid_stats(
+                occupied_cells, 
+                total_cells, 
+                occupancy_percentage, 
+                max_cell_population
+            );
+        }
+    }
+    
     // Pre-calculate weights to avoid multiplication in the inner loop
     let separation_weight = model.params.separation_weight;
     let alignment_weight = model.params.alignment_weight;

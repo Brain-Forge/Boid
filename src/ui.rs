@@ -189,8 +189,8 @@ pub fn draw_debug_info(
     // Create a background panel in the top-left corner
     let margin = 20.0;
     let line_height = 20.0;
-    let panel_width = 250.0;
-    let panel_height = line_height * 13.0 + margin; // Increased for additional lines
+    let panel_width = 300.0; // Increased width for longer text
+    let panel_height = line_height * 17.0 + margin; // Increased for additional grid stats lines
     let panel_x = window_rect.left() + panel_width / 2.0;
     let panel_y = window_rect.top() - panel_height / 2.0;
     
@@ -222,6 +222,19 @@ pub fn draw_debug_info(
         format!("Camera Zoom: {:.2}x", camera_zoom),
         format!("World Size: {:.0}x{:.0}", world_size, world_size),
     ];
+    
+    // Add spatial grid statistics
+    if let (Some(occupied), Some(total), Some(percentage), Some(max_pop)) = (
+        debug_info.grid_occupied_cells,
+        debug_info.grid_total_cells,
+        debug_info.grid_occupancy_percentage,
+        debug_info.grid_max_cell_population
+    ) {
+        debug_texts.push("--- Spatial Grid Statistics ---".to_string());
+        debug_texts.push(format!("Occupied Cells: {}/{} ({:.1}%)", 
+                                occupied, total, percentage));
+        debug_texts.push(format!("Max Cell Population: {} boids", max_pop));
+    }
     
     // Add selected boid information
     if let Some(boid_idx) = debug_info.selected_boid_index {

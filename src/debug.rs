@@ -21,6 +21,11 @@ pub struct DebugInfo {
     pub follow_mode_active: bool,
     pub culling_efficiency: Option<f32>,
     pub frustum_area_ratio: Option<f32>,
+    // Spatial grid statistics
+    pub grid_occupied_cells: Option<usize>,
+    pub grid_total_cells: Option<usize>,
+    pub grid_occupancy_percentage: Option<f32>,
+    pub grid_max_cell_population: Option<usize>,
 }
 
 impl Default for DebugInfo {
@@ -36,6 +41,11 @@ impl Default for DebugInfo {
             follow_mode_active: false,
             culling_efficiency: None,
             frustum_area_ratio: None,
+            // Initialize grid statistics
+            grid_occupied_cells: None,
+            grid_total_cells: None,
+            grid_occupancy_percentage: None,
+            grid_max_cell_population: None,
         }
     }
 }
@@ -81,5 +91,14 @@ impl DebugInfo {
             let world_area = world_size * world_size;
             self.frustum_area_ratio = Some(visible_area_size / world_area);
         }
+    }
+    
+    // Update spatial grid statistics
+    pub fn update_grid_stats(&mut self, occupied_cells: usize, total_cells: usize, 
+                            occupancy_percentage: f32, max_cell_population: usize) {
+        self.grid_occupied_cells = Some(occupied_cells);
+        self.grid_total_cells = Some(total_cells);
+        self.grid_occupancy_percentage = Some(occupancy_percentage);
+        self.grid_max_cell_population = Some(max_cell_population);
     }
 } 
